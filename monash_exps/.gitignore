@@ -1,0 +1,24 @@
+# Outputs and caches
+artifacts/
+slurm_logs/
+.cache/
+.runtime/
+.slakshna-cache/
+.slakshna-tools/
+target/
+ray_results/
+ray-results/
+checkpoints/
+*.safetensors
+*.parquet
+*.arrow
+
+# Scheduler/runtime spill files
+slurm-*.out
+core
+core.*
+
+# Python runtime files
+__pycache__/
+*.py[codz]
+.ipynb_checkpoints/

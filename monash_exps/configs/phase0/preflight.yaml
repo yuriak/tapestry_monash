@@ -1,0 +1,58 @@
+model:
+  name: "Qwen/Qwen3-0.6B"
+  dtype: "bfloat16"
+  attn_impl: "sdpa"
+  trust_remote_code: false
+  use_liger_kernel: false
+  quantization: "none"
+
+data:
+  name: "local"
+  format: "chatml"
+  format_options:
+    messages_field: "messages"
+  seq_len: 256
+  num_workers: 1
+  prefetch_batches: 1
+  pack_sequences: false
+
+lora:
+  enabled: true
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: ["q_proj", "v_proj"]
+
+training:
+  batch_size: 1
+  grad_accum: 2
+  lr: 2.0e-4
+  max_steps: 4
+  num_epochs: 1
+  warmup_steps: 1
+  seed: 42
+  deterministic: false
+  distributed:
+    strategy: "ddp"
+    ddp:
+      find_unused_parameters: false
+      gradient_as_bucket_view: true
+      broadcast_buffers: false
+      activation_checkpointing: false
+      static_graph: false
+
+checkpoint:
+  enabled: true
+  save_dir: "./artifacts/phase0/preflight-checkpoints"
+  save_interval: 1
+  keep_last_n: 1
+
+logging:
+  tracker: null
+  project: "slakshna-cluster-repro"
+  run_name: "phase0-preflight"
+
+monitoring:
+  dashboard: false
+  metrics:
+    enabled: false

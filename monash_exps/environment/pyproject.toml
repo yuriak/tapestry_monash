@@ -1,0 +1,26 @@
+[project]
+name = "slakshna-monash-cluster-environment"
+version = "0.1.0"
+description = "Portable locked Phase 0/1 environment for external Slakshna experiments"
+requires-python = "==3.11.*"
+dependencies = [
+    "bhaskera",
+    "torch==2.9.0",
+    "setproctitle>=1.3",
+    "toml>=0.10",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# scripts/environment/common.sh creates this ignored Git-archive snapshot from the
+# pinned submodule. Building from the snapshot prevents setuptools from writing
+# build/ or egg-info into the third-party source tree.
+bhaskera = { path = "../.runtime/sources/Bhaskera", editable = false }
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

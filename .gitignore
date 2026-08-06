@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Machine-local ML and recovery artifacts
+*.safetensors
+*.parquet
+*.arrow
+*.bundle
+
+# Repository scratch files
+query.txt
+reply.txt
