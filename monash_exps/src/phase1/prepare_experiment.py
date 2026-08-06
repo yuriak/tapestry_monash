@@ -29,6 +29,9 @@ def sha256_file(path: Path) -> str:
 
 
 def allocated_cpus() -> int:
+    explicit_limit = os.environ.get("SLAKSHNA_CPU_LIMIT", "")
+    if explicit_limit.isdigit() and int(explicit_limit) > 0:
+        return int(explicit_limit)
     for name in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
         raw = os.environ.get(name, "").split("(", 1)[0]
         if raw.isdigit() and int(raw) > 0:
@@ -36,40 +39,70 @@ def allocated_cpus() -> int:
     return len(os.sched_getaffinity(0))
 
 
-def materialize_dataset(data_root: Path) -> tuple[Path, dict]:
+def materialize_dataset(
+    data_root: Path, row_indices: list[int] | None = None
+) -> tuple[Path, dict]:
     from datasets import load_dataset
 
     data_root.mkdir(parents=True, exist_ok=True)
-    output = data_root / f"everyday-conversations-{DATASET_REVISION[:12]}-{DATASET_ROWS}.jsonl"
-    if not output.is_file():
-        dataset = load_dataset(
-            DATASET_ID,
-            split=DATASET_SPLIT,
-            revision=DATASET_REVISION,
-            cache_dir=os.environ.get("HF_DATASETS_CACHE"),
+    selected_indices = list(range(DATASET_ROWS)) if row_indices is None else row_indices
+    if not selected_indices or len(set(selected_indices)) != len(selected_indices):
+        raise RuntimeError(f"dataset row indices must be non-empty and unique: {selected_indices}")
+    if min(selected_indices) < 0 or max(selected_indices) >= DATASET_ROWS:
+        raise RuntimeError(
+            f"dataset row indices must be within [0, {DATASET_ROWS}): {selected_indices}"
         )
-        if len(dataset) < DATASET_ROWS:
-            raise RuntimeError(f"dataset has only {len(dataset)} rows")
-        selected = dataset.select(range(DATASET_ROWS))
+    if row_indices is None:
+        output = data_root / f"everyday-conversations-{DATASET_REVISION[:12]}-{DATASET_ROWS}.jsonl"
+        selection_description = f"select(range({DATASET_ROWS}))"
+    else:
+        selection_label = "-".join(str(index) for index in selected_indices)
+        output = data_root / (
+            f"everyday-conversations-{DATASET_REVISION[:12]}-rows-{selection_label}.jsonl"
+        )
+        selection_description = f"select({selected_indices})"
+    if not output.is_file():
         temporary = output.with_suffix(".jsonl.tmp")
-        with temporary.open("w", encoding="utf-8") as handle:
-            for row in selected:
-                messages = row.get("messages")
-                if not isinstance(messages, list) or not messages:
-                    raise RuntimeError("dataset row has no messages")
-                record = {"messages": messages}
-                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        if row_indices is not None:
+            # Phase 4 shards derive from the already pinned/materialized Phase 1
+            # source. This avoids both a second remote query and any chance that
+            # two clients observe different upstream dataset state.
+            full_path, _ = materialize_dataset(data_root, None)
+            full_lines = full_path.read_text(encoding="utf-8").splitlines()
+            with temporary.open("w", encoding="utf-8") as handle:
+                for index in selected_indices:
+                    handle.write(full_lines[index] + "\n")
+        else:
+            dataset = load_dataset(
+                DATASET_ID,
+                split=DATASET_SPLIT,
+                revision=DATASET_REVISION,
+                cache_dir=os.environ.get("HF_DATASETS_CACHE"),
+            )
+            if len(dataset) < DATASET_ROWS:
+                raise RuntimeError(f"dataset has only {len(dataset)} rows")
+            selected = dataset.select(selected_indices)
+            with temporary.open("w", encoding="utf-8") as handle:
+                for row in selected:
+                    messages = row.get("messages")
+                    if not isinstance(messages, list) or not messages:
+                        raise RuntimeError("dataset row has no messages")
+                    record = {"messages": messages}
+                    handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         temporary.replace(output)
 
     lines = output.read_text(encoding="utf-8").splitlines()
-    if len(lines) != DATASET_ROWS:
-        raise RuntimeError(f"expected {DATASET_ROWS} materialized rows, got {len(lines)}")
+    if len(lines) != len(selected_indices):
+        raise RuntimeError(
+            f"expected {len(selected_indices)} materialized rows, got {len(lines)}"
+        )
     return output.resolve(), {
         "id": DATASET_ID,
         "revision": DATASET_REVISION,
         "split": DATASET_SPLIT,
-        "selected_rows": DATASET_ROWS,
-        "selection": f"select(range({DATASET_ROWS}))",
+        "selected_rows": len(selected_indices),
+        "selected_indices": selected_indices,
+        "selection": selection_description,
         "license": "apache-2.0",
         "materialized_sha256": sha256_file(output),
     }
@@ -97,6 +130,7 @@ def resolve_template(
     tokenized_root: Path,
     checkpoint_dir: Path,
     run_name: str,
+    lora_resume_path: Path | None = None,
 ) -> None:
     text = template.read_text(encoding="utf-8")
     replacements = {
@@ -105,6 +139,7 @@ def resolve_template(
         "__TOKENIZED_ROOT__": str(tokenized_root),
         "__CHECKPOINT_DIR__": str(checkpoint_dir),
         "__RUN_NAME__": run_name,
+        "__RESUME_PATH__": str(lora_resume_path) if lora_resume_path else "",
     }
     for marker, value in replacements.items():
         text = text.replace(marker, value)
@@ -114,7 +149,7 @@ def resolve_template(
     output.write_text(text, encoding="utf-8")
 
 
-def tokenize(config_path: Path, ray_root: Path) -> str:
+def tokenize(config_path: Path, ray_root: Path, cache_name: str = "phase1_smoke_8") -> str:
     import ray
     import ray.data
     from bhaskera.config import load_config
@@ -132,7 +167,7 @@ def tokenize(config_path: Path, ray_root: Path) -> str:
     ray.init(num_cpus=cpu_count, include_dashboard=False, _temp_dir=str(short_ray_root.resolve()))
     try:
         raw = _build_raw(cfg, split="train")
-        return persist_tokenized(raw, cfg, "text", "phase1_smoke_8")
+        return persist_tokenized(raw, cfg, "text", cache_name)
     finally:
         ray.shutdown()
 
@@ -143,23 +178,48 @@ def main() -> None:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--run-name", required=True)
+    parser.add_argument("--lora-resume-path", type=Path)
+    parser.add_argument(
+        "--row-indices",
+        help="comma-separated deterministic subset of the first eight source rows",
+    )
+    parser.add_argument(
+        "--data-label",
+        help="filesystem-safe tokenization cache label; required with --row-indices",
+    )
     args = parser.parse_args()
 
     experiment_root = Path(__file__).resolve().parents[2]
     run_dir = args.run_dir.resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     data_root = experiment_root / ".runtime" / "data" / "phase1"
+    row_indices = None
+    if args.row_indices:
+        try:
+            row_indices = [int(value) for value in args.row_indices.split(",")]
+        except ValueError as exc:
+            raise SystemExit(f"invalid --row-indices: {args.row_indices}") from exc
+        if not args.data_label:
+            raise SystemExit("--data-label is required with --row-indices")
+    if args.data_label and not all(
+        character.isalnum() or character in {"-", "_"} for character in args.data_label
+    ):
+        raise SystemExit("--data-label may contain only letters, digits, '-' and '_'")
     tokenized_root = data_root / "tokenized"
+    if args.data_label:
+        tokenized_root = tokenized_root / args.data_label
 
-    train_path, dataset_manifest = materialize_dataset(data_root / "source")
+    train_path, dataset_manifest = materialize_dataset(data_root / "source", row_indices)
     model_path = download_model()
     provisional = run_dir / "provisional-config.yaml"
     resolved = run_dir / "resolved-config.yaml"
     resolve_template(
         args.template.resolve(), provisional, model_path, train_path,
         tokenized_root.resolve(), args.checkpoint_dir.resolve(), args.run_name,
+        args.lora_resume_path.resolve() if args.lora_resume_path else None,
     )
-    tokenized_path = tokenize(provisional, run_dir / "ray-tokenize")
+    cache_name = f"phase1_{args.data_label}" if args.data_label else "phase1_smoke_8"
+    tokenized_path = tokenize(provisional, run_dir / "ray-tokenize", cache_name)
 
     from bhaskera.config import load_config
 

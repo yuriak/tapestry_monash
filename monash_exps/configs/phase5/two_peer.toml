@@ -1,0 +1,30 @@
+[federation]
+id = "slakshna-phase5-local"
+name = "Slakshna Phase 5 Two Peer"
+
+[training]
+epoch_duration_secs = __EPOCH_DURATION__
+sync_deadline_secs = __SYNC_DEADLINE__
+expected_peers = 2
+
+[node]
+id = "__PEER_NAME__-placeholder"
+data_dir = "__DATA_DIR__"
+gpu_id = __GPU_ID__
+
+[network]
+host = "127.0.0.1"
+p2p_port = __P2P_PORT__
+ws_port = __WS_PORT__
+api_port = __API_PORT__
+peers = [__SEED_PEERS__]
+allowed_peers = []
+
+[discovery]
+mdns = false
+dht = false
+dns = false
+relay = false
+
+[logging]
+level = "info"

@@ -1,4 +1,4 @@
-# Slakshna Phase 0/1 Test Findings
+# Slakshna Experiment Test Findings
 
 This document records issues found while testing Slakshna as an unmodified
 third-party dependency on the FIT Slurm cluster. It is intended as actionable
@@ -13,13 +13,35 @@ feedback for the Slakshna maintainers. Experiment-side workarounds live under
 - PyTorch: 2.9.0+cu128
 - Ray: 2.56.1
 - Transformers: 4.57.6
-- Hardware exercised: one NVIDIA A40 and one node with two NVIDIA A100 GPUs
+- Hardware exercised: one NVIDIA A40, one node with two NVIDIA A100 40 GB
+  GPUs, and two M3 nodes with one NVIDIA A100-SXM4-80GB GPU each
 - CUDA toolkit baseline: 12.8
 
 Phase 0 environment/API checks and Phase 1A single-GPU SFT passed. Phase 1B
 two-GPU DDP SFT passed after disabling the Ray metrics tracker. Phase 1C
 correctly failed its independent resume verifier because the upstream resume
 path restarted training from step zero.
+
+On M3, the experiment-side resume workaround subsequently passed the complete
+two-A100 sequence: Run 1 trained through step 20 and Run 2 restored the exact
+in-memory LoRA state in a new process before emitting only steps 21 through 30.
+This validates the workaround; it does not remove the upstream defect.
+Phase 2 also passed a one-A100 dense LoRA-delta round trip, including an exact
+fresh-process warm start and one continuation optimizer step.
+Phase 3 subsequently passed the real single-node Rust/Python boundary: the
+unmodified Slakshna binary triggered A100 training and recorded the verified
+canonical update in its API-visible history.
+Phase 4 then passed a two-client, two-round local FedAvg simulation with four
+fresh optimizer runs and exact aggregate reconstruction.
+Phase 5 passed two real Slakshna peers on one M3 node: both completed two
+training rounds, exchanged canonical deltas through Iroh Gossip, reconstructed
+an identical aggregate, converged their histories/leaderboards, and preserved
+transport identity plus known-peer state across restart. The run also confirmed
+the history-persistence and review-version defects documented below.
+Phase 6 passed the same lifecycle across two distinct M3 compute nodes using
+only direct non-loopback QUIC/Gossip. It proved cross-node convergence and
+process cleanup, but also exposed that the persisted known-peer cache cannot by
+itself restore a dialable address after restart (defect 14).
 
 ## Confirmed runtime defects
 
@@ -133,6 +155,149 @@ default value, leaving the user with a valid-looking but unintended run.
 Suggested fix: validate input against a strict schema and report the complete
 path of every unknown field. If backward compatibility requires permissive
 loading, provide it only as an explicit opt-in mode.
+
+### 7. Federated adapter injection can be overwritten by DCP resume
+
+Severity: critical for federated rounds; identified by source audit.
+
+`Slakshna/ml_engine.py` writes an aggregated LoRA state to
+`adapter_model.safetensors` and to a separate `*_base_lora.pth` file. The next
+Bhaskera model build can load the latter through `lora.resume_path`, but the
+training loop then resumes the existing DCP checkpoint, whose model shards
+still contain the pre-aggregation parameters. DCP can therefore overwrite the
+aggregated adapter before training continues. Replacing only
+`adapter_model.safetensors` also leaves that checkpoint internally inconsistent
+with its DCP model state.
+
+Suggested fix: define federated aggregation as an explicit warm-start boundary.
+Load the aggregated adapter into a fresh training state with a new optimizer,
+or update model and optimizer checkpoint state together. Do not mutate one
+representation inside an otherwise completed checkpoint. The Phase 2 external
+experiment uses the fresh-state approach while leaving the submodule unchanged.
+
+### 8. The stock ML engine overrides the scheduler-assigned GPU visibility
+
+Severity: critical on Slurm and other resource-isolated schedulers; identified
+by source audit before Phase 3 execution.
+
+The Rust node pins its Python child using the configured `gpu_id`, but
+`Slakshna/ml_engine.py` later launches Bhaskera with a new environment that
+unconditionally sets `CUDA_VISIBLE_DEVICES="1,2,3"`. This discards the GPU
+selection made by Rust and can request devices outside a one-GPU allocation.
+It can also make CUDA unavailable when the allocation exposes only logical
+device 0.
+
+Suggested fix: never rewrite `CUDA_VISIBLE_DEVICES` inside the ML engine.
+Treat the inherited visible device set as authoritative, validate its size,
+and let the scheduler or parent launcher perform physical GPU selection. The
+Phase 3 bridge requires exactly one inherited visible GPU.
+
+### 9. ML-engine contract failures are not surfaced as node failures
+
+Severity: high for operational correctness; identified by source audit.
+
+The Rust training loop accepts only the last stdout line from
+`python ml_engine.py`. If the child exits successfully but that line does not
+deserialize as `MLEngineOutput`, the parse failure is ignored. The loop then
+tries to record a placeholder update with an empty record hash; history rejects
+it, but the node continues running. Successful-child stderr is also discarded,
+which hides the Python training log from the node operator.
+
+Suggested fix: treat spawn, exit, UTF-8, empty-output, JSON, and required-field
+failures as explicit round failures with structured logs and status/API state.
+Make the Python executable and ML-engine path configurable instead of relying
+on the names `python` and `ml_engine.py` in the current working directory. The
+Phase 3 verifier rejects missing updates and the `error_hash` placeholder.
+
+### 10. Aggregation weights are not renormalized after peers are unavailable or rejected
+
+Severity: high for federated update correctness; identified by source audit
+while defining the Phase 4 aggregation oracle.
+
+`Slakshna/ml_engine.py` computes softmax trust weights across every configured
+node before it knows which peer deltas are present and valid. Aggregation later
+iterates only over `available_deltas`, but continues using the original weights.
+If a peer update is missing, malformed, non-finite, or rejected by the norm
+limit, the retained weights sum to less than one. The aggregate is therefore
+silently shrunk toward a zero update instead of being a weighted average of the
+accepted participants.
+
+Suggested fix: first validate the complete key/shape/dtype schema of every
+candidate update, form the accepted participant set, and renormalize its
+non-negative weights to sum to exactly one. Log both exclusions and final
+effective weights. Phase 4 uses sample-weighted FedAvg with a strict sum-one
+oracle; trust weighting remains deferred until the real-peer phase.
+
+### 11. Model-update history is not persisted across node restarts
+
+Severity: high for federated durability; identified by source audit while
+defining the Phase 5 recovery contract.
+
+`UpdateHistory::new()` always constructs an empty in-memory `HashMap`. Although
+RocksDB persists the node keypair, round field, and known-peer cache, locally
+created and remotely received `ModelUpdate`/`PeerReview` records are not written
+to it and are not restored. Restarting a node therefore loses its hash-chain
+history, trust evidence, latest peer deltas, and API-visible audit trail.
+
+Suggested fix: atomically persist every accepted record keyed by origin and
+sequence, validate each chain while loading, and restore history before network
+or training tasks start. Phase 5 separately checks the state that is currently
+durable (EndpointId and known peers) and records the empty post-restart update
+API as an upstream limitation.
+
+### 12. Network update signatures are placeholders and are never verified
+
+Severity: critical for adversarial or cross-institution deployments; identified
+by source audit before Phase 5 P2P execution.
+
+The training loop writes strings such as `node_signature_<epoch>` and
+`review_sig_<epoch>` into `UpdateRecord.signature`. `record_update()` verifies
+only the unkeyed SHA-256 content hash; it does not verify an Ed25519 signature
+or bind `record.node_id` to the authenticated Iroh sender. A connected peer can
+therefore claim another participant's logical identity or fabricate reviews
+with internally consistent hashes.
+
+Suggested fix: sign a domain-separated canonical encoding of every record with
+the persisted federation key, verify it before history insertion, and require
+the claimed node identity to match the authenticated transport identity. Phase
+5 validates content/hash-chain integrity only and does not claim Byzantine
+authentication.
+
+### 13. Peer reviews can bind to a newer update than the ML engine evaluated
+
+Severity: high for version-specific trust; identified while reviewing the
+concurrent two-peer Phase 5 lifecycle.
+
+The Python child evaluates the peer deltas that Rust staged before local
+training. Only after that child returns does Rust choose the review target by
+asking history for the peer's latest update. If the remote peer broadcasts its
+next-round update during the local training window, the review can therefore
+name that newer record even though the score was computed from the older
+payload.
+
+Suggested fix: pass the exact evaluated record hash through the ML-engine
+contract and construct the review against that immutable hash. Phase 5 requires
+every review target to be a genuine recorded update from the claimed peer and
+reports the observed target round, but it does not claim version-specific
+review binding until upstream carries this provenance explicitly.
+
+### 14. Known-peer persistence loses direct addressing information
+
+Severity: high for closed-network and cross-institution recovery; confirmed by
+the Phase 6 two-node restart test.
+
+`remember_peer()` persists only `peer:<EndpointId> -> last_seen` in RocksDB,
+and `known_peers()` consequently restores endpoint IDs without an
+`EndpointAddr`. Configured direct seeds are inserted into the in-memory lookup,
+but remembered peers are not restored with direct IPs or relay URLs. After
+Phase 6 restarted Peer A, its API correctly listed Peer B as known while the
+transport logged `No addressing information available` when trying to dial it.
+
+Suggested fix: persist the latest validated `EndpointAddr` (including direct
+and relay addresses) with each peer, restore it into the memory lookup before
+joining Gossip, and refresh it after successful connections. Phase 6 therefore
+claims identity/cache durability, not autonomous network reconnection after a
+peer restart.
 
 ## Packaging and cluster-integration findings
 

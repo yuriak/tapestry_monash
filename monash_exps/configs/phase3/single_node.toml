@@ -1,0 +1,30 @@
+[federation]
+id = "slakshna-phase3-local"
+name = "Slakshna Phase 3 Single Node"
+
+[training]
+epoch_duration_secs = 5
+sync_deadline_secs = 3600
+expected_peers = 1
+
+[node]
+id = "phase3-placeholder"
+data_dir = "__DATA_DIR__"
+gpu_id = 0
+
+[network]
+host = "127.0.0.1"
+p2p_port = __P2P_PORT__
+ws_port = __WS_PORT__
+api_port = __API_PORT__
+peers = []
+allowed_peers = []
+
+[discovery]
+mdns = false
+dht = false
+dns = false
+relay = false
+
+[logging]
+level = "info"

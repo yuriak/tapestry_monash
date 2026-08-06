@@ -15,6 +15,9 @@ _STEP_RE = re.compile(r"step_(\d+)$")
 
 
 def allocated_cpus() -> int:
+    explicit_limit = os.environ.get("SLAKSHNA_CPU_LIMIT", "")
+    if explicit_limit.isdigit() and int(explicit_limit) > 0:
+        return int(explicit_limit)
     for name in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
         raw = os.environ.get(name, "").split("(", 1)[0]
         if raw.isdigit() and int(raw) > 0:
@@ -82,6 +85,25 @@ def lora_fingerprint(model: Any) -> dict[str, Any]:
         "nonzero_count": nonzero,
         "l2_norm": squared_norm ** 0.5,
     }
+
+
+def canonical_lora_state(model: Any) -> dict[str, Any]:
+    """Return the rank-local LoRA state using Bhaskera checkpoint key names."""
+    import torch
+
+    state: dict[str, Any] = {}
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if "lora_" not in name:
+                continue
+            clean_name = name[len("module."):] if name.startswith("module.") else name
+            clean_name = re.sub(
+                r"(lora_[AB])\.[^.]+\.(weight)", r"\1.\2", clean_name
+            )
+            state[clean_name] = parameter.detach().cpu().float().contiguous()
+    if not state:
+        raise RuntimeError("no LoRA parameters found for adapter export")
+    return state
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -164,6 +186,18 @@ def audited_worker(config_dict: dict[str, Any]) -> None:
     model = wrap_model(model, cfg, local_rank, profile)
     initial = lora_fingerprint(model)
 
+    initial_adapter_path = audit.get("initial_adapter_path")
+    if initial_adapter_path and rank == 0:
+        from safetensors.torch import save_file
+
+        destination = Path(initial_adapter_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        save_file(canonical_lora_state(model), str(temporary))
+        temporary.replace(destination)
+    if initial_adapter_path and dist.is_initialized():
+        dist.barrier()
+
     # Capture the in-memory state immediately after Bhaskera's DCP loader has
     # restored it. This distinguishes a real resume from merely discovering a
     # checkpoint directory on disk.
@@ -238,6 +272,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--num-workers", type=int, required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--capture-initial-adapter", type=Path)
     args = parser.parse_args()
 
     import ray
@@ -270,9 +305,15 @@ def main() -> None:
     evidence_dir = run_dir / "worker-evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     cpus = allocated_cpus()
-    if cpus < args.num_workers + 2:
-        raise SystemExit(f"need at least {args.num_workers + 2} CPUs, allocation has {cpus}")
-    cpus_per_worker = max(1, (cpus - 2) // args.num_workers)
+    control_cpu_text = os.environ.get("SLAKSHNA_RAY_CONTROL_CPUS", "2")
+    if not control_cpu_text.isdigit() or int(control_cpu_text) < 2:
+        raise SystemExit("SLAKSHNA_RAY_CONTROL_CPUS must be an integer of at least 2")
+    control_cpus = int(control_cpu_text)
+    if cpus < args.num_workers + control_cpus:
+        raise SystemExit(
+            f"need at least {args.num_workers + control_cpus} CPUs, allocation has {cpus}"
+        )
+    cpus_per_worker = max(1, (cpus - control_cpus) // args.num_workers)
     # Keep Ray sockets under a short node-local path; descriptive artifact
     # paths can exceed the AF_UNIX 107-byte limit before Ray even starts.
     ray_temp = Path(os.environ.get("TMPDIR", "/tmp")) / f"slakshna-p1-train-{os.getpid()}"
@@ -284,17 +325,23 @@ def main() -> None:
         include_dashboard=False,
         _temp_dir=str(ray_temp),
     )
+    # Ray's state helpers otherwise scan the node and fail ambiguously when
+    # Phase 5 intentionally runs two independent local Ray clusters.
+    ray_address = str(context.address_info.get("address") or "")
+    if ray_address:
+        os.environ["RAY_ADDRESS"] = ray_address
     resources = {key: float(value) for key, value in ray.cluster_resources().items()}
     write_json(
         run_dir / "launcher-environment.json",
         {
             "pid": os.getpid(),
             "allocated_cpus": cpus,
+            "control_cpus_reserved": control_cpus,
             "cpus_per_worker": cpus_per_worker,
             "visible_gpus": visible_gpus,
             "gpu_names": [torch.cuda.get_device_name(i) for i in range(visible_gpus)],
             "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
-            "ray_address": context.address_info.get("address"),
+            "ray_address": ray_address,
             "ray_resources": resources,
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
             "configured_trackers": sorted(trackers),
@@ -305,7 +352,13 @@ def main() -> None:
     try:
         dataset = build_ray_dataset(cfg, world_size=args.num_workers)
         train_loop_config = cfg.as_dict()
-        train_loop_config["_phase1_audit"] = {"evidence_dir": str(evidence_dir)}
+        train_loop_config["_phase1_audit"] = {
+            "evidence_dir": str(evidence_dir),
+            "initial_adapter_path": (
+                str(args.capture_initial_adapter.resolve())
+                if args.capture_initial_adapter is not None else None
+            ),
+        }
         trainer = TorchTrainer(
             train_loop_per_worker=audited_worker,
             train_loop_config=train_loop_config,
