@@ -285,8 +285,7 @@ bash monash_exps/scripts/environment/06_install_rust.sh
 The script uses the official rustup TLS installer and places `cargo` and
 `rustup` under `monash_exps/.runtime/`; it does not modify the login shell.
 The exact resolved `rustc`, `cargo`, toolchain, Cargo lock, and Slakshna revision
-are captured by each run. `tmp.sh` performs this bootstrap automatically when
-needed.
+are captured by each run.
 
 The M3 runner keeps GCC 10 loaded for CUDA compatibility, but removes its old
 `libstdc++` from `LD_LIBRARY_PATH` only at the Rust boundary and builds Rust C/C++
@@ -560,16 +559,7 @@ cross-institution NAT, malicious peers, DP, or Top-K compression. If direct M3
 QUIC is blocked, the failure artifact is retained and a relay-only networking
 smoke test becomes the single fallback experiment.
 
-### Submit and wait from the current environment
-
-The repository-root helper validates the request, submits the real job, prints
-queue status every 30 seconds, and displays the final job log and verifier:
-
-```bash
-bash tmp.sh | tee output.txt
-```
-
-Equivalent direct submission:
+### Slurm submission
 
 ```bash
 mkdir -p monash_exps/slurm_logs
@@ -610,6 +600,74 @@ peer logged `No addressing information available`. This is root README defect
 remaining Ray controller-state warnings were non-fatal, and the final `srun`
 termination messages are expected because the controller deliberately stops
 the long-lived peer steps after all evidence and cleanup checks are captured.
+
+## Phase 7: convergent federated LoRA SFT on M3
+
+Phase 7 reuses the accepted Phase 6 two-node direct transport while increasing
+the workload to a substantive supervised fine-tuning run. It retains the pinned
+Qwen3-0.6B base model and a rank-8 LoRA adapter on `q_proj` and `v_proj`. Each
+Slakshna peer receives one scheduler-isolated A100. The convergence workload
+can run either as two peers on a two-A100 M3 node or as one peer on each of two
+M3 nodes; the latter retains the Phase 6 direct-address transport proof while
+the training, data, aggregation, and evaluation contracts remain identical.
+
+The input is the pinned `databricks/databricks-dolly-15k` revision
+`bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a`. The deterministic non-IID split
+assigns closed/open QA and information extraction to Peer A, and brainstorming,
+creative writing, and summarization to Peer B. Each peer receives 1,152 local
+training examples and 128 disjoint same-domain validation examples. Original
+Dolly records are converted to two-message ChatML conversations and all source
+indices and materialized-file hashes are retained in the run manifest.
+
+The experiment performs five equal-weight dense FedAvg rounds. Each peer trains
+for ten local data epochs per round with batch size 16, sequence length 256,
+and 720 optimizer steps, for 50 local epochs and 3,600 optimizer steps per peer
+in total. Slakshna carries each canonical `base64(zlib(safetensors))` LoRA
+delta over the direct Gossip mesh. Both peers independently apply
+0.5/0.5 FedAvg and must produce identical global adapter states `G1` through
+`G5`.
+
+After the peers finish, fresh processes load and evaluate `G0` through `G5` on
+both held-out site datasets. Acceptance requires all ten local trainings to
+finish with finite decreasing loss, exact per-round global-state agreement,
+the final macro held-out negative log likelihood to improve over `G0`, a
+non-empty generation from a fresh `G5` load, clean Slakshna source state, and
+no allocation-scoped process residue.
+
+### Slurm submission
+
+Within an existing one-node, two-A100 Slurm allocation:
+
+```bash
+bash monash_exps/scripts/phase7/run_phase7_two_gpus.sh
+```
+
+As a standalone two-node job:
+
+```bash
+mkdir -p monash_exps/slurm_logs
+
+sbatch \
+  --export=ALL,SLAKSHNA_CLUSTER=m3,SLAKSHNA_M3_COMPILER_MODULE=gcc/10.2.0,SLAKSHNA_M3_CUDA_MODULE=cuda/12.8,SLAKSHNA_PHASE7_EPOCH_DURATION=600 \
+  --partition=fit --qos=fitq --account=mg61 \
+  --nodes=2 --ntasks=2 --ntasks-per-node=1 --cpus-per-task=20 \
+  --mem=128G --gres=gpu:A100:1 --time=04:00:00 \
+  -J SlakshnaPhase7 \
+  monash_exps/scripts/slurm/submit_job_2node.sh \
+  monash_exps/scripts/phase7/run_phase7_two_nodes.sh
+```
+
+The completion pointer is `artifacts/phase7/latest-<job-id>.txt`; its target
+must contain `verification-summary.json` ending with `PHASE7 PASSED`.
+
+The accepted M3 run completed in both supported placements, including a true
+two-node execution on `m3u004` and `m3u005`. Every peer completed 50 local
+epochs and 3,600 optimizer steps. The two peers produced byte-equivalent
+logical G1--G5 tensor states after each FedAvg round. Macro held-out negative
+log likelihood improved from `3.1924703177` at G0 to `2.3317950936` at G5
+(`26.96%` relative improvement), and a fresh G5 process produced non-empty
+text. Both peer histories converged to the same 32 unique records: 12 model
+updates and 20 peer reviews.
 
 ## Upstream compatibility handling
 

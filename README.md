@@ -42,6 +42,11 @@ Phase 6 passed the same lifecycle across two distinct M3 compute nodes using
 only direct non-loopback QUIC/Gossip. It proved cross-node convergence and
 process cleanup, but also exposed that the persisted known-peer cache cannot by
 itself restore a dialable address after restart (defect 14).
+Phase 7 passed five federated rounds on both one-node/two-GPU and true two-node
+placements. Each peer completed 50 local epochs and 3,600 optimizer steps;
+both peers reconstructed identical G1--G5 adapters, and macro held-out negative
+log likelihood improved by 26.96%. The run also quantified the fixed epoch
+barrier utilization issue documented as defect 15.
 
 ## Confirmed runtime defects
 
@@ -298,6 +303,25 @@ and relay addresses) with each peer, restore it into the memory lookup before
 joining Gossip, and refresh it after successful connections. Phase 6 therefore
 claims identity/cache durability, not autonomous network reconnection after a
 peer restart.
+
+### 15. The mid-epoch barrier waits until its deadline after all peers are ready
+
+Severity: medium for accelerator utilization; confirmed by the Phase 7
+one-node and two-node convergence runs.
+
+The training loop detects when `expected_peers` have been collected and logs
+that it completed early, but it then unconditionally sleeps until
+`epoch_start + sync_deadline_secs`. With a 600-second epoch and a 570-second
+deadline, Phase 7 local training and artifact production took approximately
+186--207 seconds per peer, followed by roughly six idle minutes before trust
+ranking and the next boundary. The underlying 720-step GPU training interval
+was only 145--157 seconds, yielding approximately 24--26% GPU duty cycle.
+
+Suggested fix: make the barrier track current-epoch ModelUpdates and reviews,
+then advance as soon as every expected participant has supplied the required
+records. Retain the deadline only as a timeout for missing or slow peers. A
+fixed clock-aligned mode may remain useful, but it should be explicit rather
+than imposing idle time after the completion condition has already passed.
 
 ## Packaging and cluster-integration findings
 
