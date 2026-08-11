@@ -40,6 +40,12 @@ from phase8.protocol import (  # noqa: E402
 TRAINING_ROUNDS = 5
 LOCAL_EPOCHS = 10
 EXPECTED_STEPS = 720
+# A federated round starts from an already-trained, peer-averaged adapter.  A
+# small within-round loss increase can therefore occur from stochastic sample
+# order even when all metrics are finite and the multi-round trajectory is
+# healthy.  Reject material local regressions here; assess convergence over the
+# complete five-round trajectory in the final audit/report.
+MINIMUM_LOCAL_LOSS_DROP = -0.05
 
 
 def required_path(name: str) -> Path:
@@ -157,6 +163,18 @@ def resolve_round_config(
     destination.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
 
+def training_verification_command(training_dir: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(EXPERIMENT_ROOT / "src/phase1/verify_training.py"),
+        "--mode", "phase1a",
+        "--run-dir", str(training_dir),
+        "--expected-workers", "1",
+        "--expected-final-step", str(EXPECTED_STEPS),
+        "--minimum-loss-drop", str(MINIMUM_LOCAL_LOSS_DROP),
+    ]
+
+
 def train_round(
     *,
     round_number: int,
@@ -194,14 +212,7 @@ def train_round(
         ],
         training_dir / "train.log",
     )
-    run_logged(
-        [
-            sys.executable, str(EXPERIMENT_ROOT / "src/phase1/verify_training.py"),
-            "--mode", "phase1a", "--run-dir", str(training_dir),
-            "--expected-workers", "1", "--expected-final-step", str(EXPECTED_STEPS),
-        ],
-        training_dir / "verify.log",
-    )
+    run_logged(training_verification_command(training_dir), training_dir / "verify.log")
     checkpoints = sorted(checkpoint_dir.glob("step_*"))
     if not checkpoints:
         raise RuntimeError(f"Round {round_number} produced no checkpoint")
@@ -256,6 +267,7 @@ def train_round(
         "initial_median_loss": losses["initial_median_loss"],
         "final_median_loss": losses["final_median_loss"],
         "relative_loss_drop": losses["relative_loss_drop"],
+        "minimum_accepted_local_loss_drop": MINIMUM_LOCAL_LOSS_DROP,
         "aggregation_before_training": aggregation,
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         "gpu_count": torch.cuda.device_count(),

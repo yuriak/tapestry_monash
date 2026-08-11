@@ -227,7 +227,7 @@ Treat the inherited visible device set as authoritative, validate its size,
 and let the scheduler or parent launcher perform physical GPU selection. The
 Phase 3 bridge requires exactly one inherited visible GPU.
 
-### 9. ML-engine contract failures are not surfaced as node failures
+### 9. ML-engine failures are not surfaced as node failures
 
 Severity: high for operational correctness; identified by source audit.
 
@@ -243,6 +243,13 @@ failures as explicit round failures with structured logs and status/API state.
 Make the Python executable and ML-engine path configurable instead of relying
 on the names `python` and `ml_engine.py` in the current working directory. The
 Phase 3 verifier rejects missing updates and the `error_hash` placeholder.
+
+Phase 8 confirmed that this also applies when the Python child exits nonzero.
+After a complete 720-step local training run was rejected by an experiment-side
+loss-trend check, Rust logged exit code 1 but remained live, attempted to record
+an invalid empty-hash update, and broadcast a 291-byte placeholder payload.
+The external runner detected the log error and stopped the site, but upstream
+should fail the round before history insertion or network broadcast.
 
 ### 10. Aggregation weights are not renormalized after peers are unavailable or rejected
 

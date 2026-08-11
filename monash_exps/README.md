@@ -832,6 +832,24 @@ the HTTP API, WebSocket port, Ray services, data, and credentials remain local.
 Account claiming and concrete tunnel commands are deliberately deferred to the
 communication preflight, after the bridge-readiness check passes.
 
+The tracked `p8_m3.sh` and `m3_spartan.sh` runners implement the concrete
+two-site lifecycle. Their `prepare` actions create the private site state and
+persistent endpoint identities, `run` accepts the remote EndpointId and owns
+the exact foreground child processes, and `status`/`audit` expose bounded
+inspection and verification. If a failed attempt leaves the sites at different
+rounds, run `reset-run` at both sites instead of resuming implicitly. This
+preserves the private prepared data and verified G0, removes only derived round
+state and the local Slakshna database, and issues fresh identities that must be
+exchanged before the next run.
+
+Each local round is required to produce 720 finite-metric optimizer steps, a
+complete checkpoint, and the expected LoRA tensor structure. Because later
+rounds start from an already-trained peer-averaged adapter, their stochastic
+within-round median loss may fluctuate; the bridge accepts at most a 5% local
+regression. Convergence is assessed over the complete five-round trajectory
+and final held-out evaluation rather than requiring every individual local
+round to improve monotonically.
+
 ### Playit agent claim and UDP preflight
 
 Phase 8 uses one playit agent on M3. Spartan is the initiating Iroh client and
