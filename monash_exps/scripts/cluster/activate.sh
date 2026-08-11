@@ -12,6 +12,7 @@ if [[ -z "${_requested_cluster}" ]]; then
     case "${SLURM_CLUSTER_NAME:-}" in
         *[Ff][Ii][Tt]*) _requested_cluster="fit" ;;
         *[Mm]3*) _requested_cluster="m3" ;;
+        *[Ss][Pp][Aa][Rr][Tt][Aa][Nn]*) _requested_cluster="spartan" ;;
     esac
 fi
 
@@ -22,7 +23,7 @@ if [[ -z "${_requested_cluster}" && -d /cm/shared/apps/spack ]]; then
 fi
 
 case "${_requested_cluster:-generic}" in
-    fit|m3)
+    fit|m3|spartan)
         # shellcheck source=/dev/null
         source "${_activate_dir}/${_requested_cluster}.sh"
         ;;
@@ -32,7 +33,7 @@ case "${_requested_cluster:-generic}" in
         source "${_activate_dir}/common.sh"
         ;;
     *)
-        echo "Unsupported SLAKSHNA_CLUSTER=${_requested_cluster}; expected fit, m3, or generic." >&2
+        echo "Unsupported SLAKSHNA_CLUSTER=${_requested_cluster}; expected fit, m3, spartan, or generic." >&2
         return 2
         ;;
 esac

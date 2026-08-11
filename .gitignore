@@ -226,3 +226,11 @@ __marimo__/
 # Repository scratch files
 query.txt
 reply.txt
+
+# Local experiment coordination and captured console output
+/Note.md
+/dev_docs/
+/bak/
+/tmp.sh
+/tmp2.sh
+/output*.txt

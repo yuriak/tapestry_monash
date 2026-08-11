@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -58,6 +59,20 @@ def leading_int(raw: str | None) -> int | None:
 
 def command(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, text=True, capture_output=True, check=False)
+
+
+def python_tree_digest(root: Path) -> tuple[str, int]:
+    """Hash relative names and contents of all package Python sources."""
+    digest = hashlib.sha256()
+    sources = sorted(root.rglob("*.py"))
+    for source in sources:
+        relative = source.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        content = source.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest(), len(sources)
 
 
 def main() -> None:
@@ -183,6 +198,19 @@ def main() -> None:
         installed_file = Path(config_module.__file__).resolve()
         require(source_root not in installed_file.parents,
                 f"Bhaskera import resolves into the submodule: {installed_file}")
+        package_paths = list(importlib.import_module("bhaskera").__path__)
+        require(len(package_paths) == 1,
+                f"expected one installed Bhaskera package path, got {package_paths}")
+        installed_package = Path(package_paths[0]).resolve()
+        snapshot_package = snapshot / "src" / "bhaskera"
+        require(snapshot_package.is_dir(), f"missing snapshot package: {snapshot_package}")
+        snapshot_digest, snapshot_count = python_tree_digest(snapshot_package)
+        installed_digest, installed_count = python_tree_digest(installed_package)
+        require(snapshot_count > 0, "Bhaskera snapshot contains no Python sources")
+        require(installed_count == snapshot_count,
+                f"installed Bhaskera source count {installed_count} != snapshot {snapshot_count}")
+        require(installed_digest == snapshot_digest,
+                "installed Bhaskera sources do not match the pinned snapshot")
         (output_dir / "submodule-revision.txt").write_text(commit + "\n", encoding="utf-8")
         return {
             "revision": commit,
@@ -190,6 +218,8 @@ def main() -> None:
             "snapshot_revision": snapshot_revision,
             "installed_from": installed_url,
             "installed_file": str(installed_file),
+            "python_source_count": installed_count,
+            "python_source_sha256": installed_digest,
             "working_tree": "clean",
         }
 

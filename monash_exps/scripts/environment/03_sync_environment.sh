@@ -42,7 +42,8 @@ echo "Synchronizing profile '${profile}' from the frozen lockfile..."
 "${SLAKSHNA_UV_BIN}" sync \
     --project "${SLAKSHNA_ENV_PROJECT}" \
     --python "${python_path}" \
-    --frozen
+    --frozen \
+    --reinstall-package bhaskera
 
 "${SLAKSHNA_UV_BIN}" pip check --python "${SLAKSHNA_UV_ENVIRONMENT}/bin/python"
 

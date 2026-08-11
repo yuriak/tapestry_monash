@@ -1,0 +1,41 @@
+[federation]
+id = "__FEDERATION_ID__"
+name = "__FEDERATION_NAME__"
+
+[training]
+epoch_duration_secs = __EPOCH_DURATION__
+sync_deadline_secs = __SYNC_DEADLINE__
+expected_peers = 2
+
+# The Phase 8 Python bridge owns the dense, versioned envelope. Slakshna keeps
+# compressed_delta opaque, so its optional sparse/int8 bridge mode is disabled.
+[compression]
+enabled = false
+sparsity = 1.0
+quantization = "symmetric_int8"
+allow_legacy_delta_format = false
+max_payload_bytes = 7340032
+max_tensor_elements = 10000000
+
+[node]
+id = "__SITE__-placeholder"
+data_dir = "__DATA_DIR__"
+gpu_id = __GPU_ID__
+num_gpus = 1
+
+[network]
+host = "0.0.0.0"
+p2p_port = __P2P_PORT__
+ws_port = __WS_PORT__
+api_port = __API_PORT__
+peers = [__SEED_PEERS__]
+allowed_peers = [__ALLOWED_PEERS__]
+
+[discovery]
+mdns = false
+dht = false
+dns = false
+relay = false
+
+[logging]
+level = "info"

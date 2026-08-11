@@ -5,9 +5,10 @@ third-party dependency on the FIT Slurm cluster. It is intended as actionable
 feedback for the Slakshna maintainers. Experiment-side workarounds live under
 `monash_exps/`; the `Slakshna` submodule has not been changed.
 
-## Tested baseline
+## Tested baselines
 
-- Slakshna revision: `a3112cf7aa11316d47c6bdf749a45c7071b5f9f3`
+- Phase 1--7 acceptance revision: `a3112cf7aa11316d47c6bdf749a45c7071b5f9f3`
+- Phase 8 candidate revision: `f09eff9a73ae8f1080d4f0b43114b3a8aa5e99bb`
 - Installed Bhaskera distribution version: `2.2.0`
 - Python: 3.11.13
 - PyTorch: 2.9.0+cu128
@@ -48,6 +49,25 @@ both peers reconstructed identical G1--G5 adapters, and macro held-out negative
 log likelihood improved by 26.96%. The run also quantified the fixed epoch
 barrier utilization issue documented as defect 15.
 
+The Phase 8 candidate was subsequently accepted by source audit, locked Cargo
+build, three Rust identity tests, three Python delta-transport tests, CPU/GPU
+environment preflights, and a four-step single-A100 LoRA training run. The
+installed Bhaskera Python tree exactly matched the pinned source snapshot, and
+the training run produced a complete 112-tensor adapter checkpoint with finite
+loss. Source review confirms fixes for the scheduler-assigned GPU visibility
+defect and the DDP epoch-metrics collective ordering defect. Other findings
+below remain applicable unless explicitly marked otherwise.
+
+The experiment-side Phase 8 bridge now removes Phase 7's shared-filesystem
+assumption. Slakshna transports an opaque, versioned dense-delta envelope whose
+sender EndpointId, site role, round number, base-state hash, file hash, tensor
+hash, shape cardinality, and bounded byte counts are checked before FedAvg.
+This is an external compatibility layer, not an upstream fix: Slakshna's
+ML-engine failure-handling limitation in defect 9 remains particularly
+important for cross-cluster operation, so Phase 8 uses independent site and
+paired audit documents rather than treating node liveness or exit status as
+acceptance evidence.
+
 ## Confirmed runtime defects
 
 ### 1. The trainer checkpoint wrapper passes the wrong directory to the DCP loader
@@ -85,6 +105,10 @@ Relevant files:
 ### 2. RayMetricsLogger can deadlock DDP training
 
 Severity: high for multi-GPU runs using the Ray tracker.
+
+Status at `f09eff9`: fixed by source audit; all ranks now execute the
+epoch-metrics tracker call. Runtime DDP revalidation remains part of the
+upgraded environment acceptance rather than the Phase 8 single-GPU path.
 
 Bhaskera invokes some tracker calls only from rank zero, including epoch-level
 metrics. `RayMetricsLogger` translates a tracker call into
@@ -184,6 +208,12 @@ experiment uses the fresh-state approach while leaving the submodule unchanged.
 
 Severity: critical on Slurm and other resource-isolated schedulers; identified
 by source audit before Phase 3 execution.
+
+Status at `f09eff9`: fixed by source audit. The Python ML engine no longer
+replaces `CUDA_VISIBLE_DEVICES` with the hard-coded `1,2,3` set; GPU visibility
+is inherited from the Rust child environment and resolved as logical device
+zero inside that visible set. Experiment launchers still align Rust's
+configured `gpu_id` with scheduler-visible logical device indices.
 
 The Rust node pins its Python child using the configured `gpu_id`, but
 `Slakshna/ml_engine.py` later launches Bhaskera with a new environment that

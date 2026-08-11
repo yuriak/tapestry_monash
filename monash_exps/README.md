@@ -5,9 +5,53 @@ third-party submodule. Shared environment definitions, configs, Python code,
 and phase runners are cluster-independent. Module loading and Slurm resource
 selection are isolated at the shell boundary.
 
-The code currently supports FIT and provides an M3 adapter whose module labels
-are supplied by the user after inspecting `module avail` on M3. Neither adapter
-modifies the Slakshna submodule.
+The code currently supports FIT and provides M3 and Spartan adapters whose
+site-specific module labels can be supplied after inspecting `module avail`.
+Other Slurm clusters can use the generic adapter after their compiler and CUDA
+modules have been loaded. No adapter modifies the Slakshna submodule.
+
+## One-command deployment
+
+Every clone builds its own ignored runtime from the committed source and lock
+files. Initialize a deployment from the repository root with:
+
+```bash
+SLAKSHNA_CLUSTER=fit bash monash_exps/scripts/setup.sh
+```
+
+For M3, either preload its compiler and CUDA modules or supply their labels:
+
+```bash
+export SLAKSHNA_CLUSTER=m3
+export SLAKSHNA_M3_COMPILER_MODULE='<M3 compiler module>'
+export SLAKSHNA_M3_CUDA_MODULE='<M3 CUDA module>'
+bash monash_exps/scripts/setup.sh
+```
+
+On a Spartan interactive allocation, the corresponding one-command deployment
+is:
+
+```bash
+SLAKSHNA_CLUSTER=spartan bash monash_exps/scripts/setup.sh
+```
+
+If the allocation does not already expose the required tools, set
+`SLAKSHNA_SPARTAN_COMPILER_MODULE`, `SLAKSHNA_SPARTAN_CUDA_MODULE`, and
+`SLAKSHNA_SPARTAN_LLVM_MODULE` to labels available at the site before invoking
+the same command. `SLAKSHNA_SPARTAN_GIT_MODULE` is also supported when Git is
+provided only as a module.
+
+The setup command initializes the pinned submodule, installs project-local uv
+and Rust toolchains when needed, synchronizes the `primary` environment from
+the frozen lock, rebuilds Bhaskera from the pinned tracked-source snapshot,
+builds the Slakshna release binary, installs checksum-pinned unprivileged
+playit binaries, and runs the CPU/API preflight. It is idempotent and does not
+resolve a new dependency graph on the target cluster.
+
+The playit account claim and tunnel assignment are deliberately separate from
+deployment. Credentials must remain outside the repository and experiment
+logs. Model weights and site-local datasets are also materialized by experiment
+runners rather than by environment setup.
 
 ## Versioned and local state
 
@@ -25,7 +69,7 @@ not relocatable: every clone or cluster must run the frozen sync locally.
 
 All experiment runners source `scripts/cluster/activate.sh`. Selection order is:
 
-1. explicit `SLAKSHNA_CLUSTER=fit|m3|generic`;
+1. explicit `SLAKSHNA_CLUSTER=fit|m3|spartan|generic`;
 2. `SLURM_CLUSTER_NAME` when recognizable;
 3. FIT's shared Spack tree as a convenience fallback;
 4. `generic`, which assumes required system modules are already loaded.
@@ -45,6 +89,18 @@ export SLAKSHNA_CLUSTER=m3
 export SLAKSHNA_M3_COMPILER_MODULE='<M3 compiler module>'
 export SLAKSHNA_M3_CUDA_MODULE='<M3 CUDA 12.8+ module>'
 export SLAKSHNA_M3_GIT_MODULE='<M3 Git module>'
+source monash_exps/scripts/cluster/activate.sh
+```
+
+Spartan follows the same portable policy, with independent optional module
+variables:
+
+```bash
+export SLAKSHNA_CLUSTER=spartan
+export SLAKSHNA_SPARTAN_COMPILER_MODULE='<Spartan compiler module>'
+export SLAKSHNA_SPARTAN_CUDA_MODULE='<Spartan CUDA module>'
+export SLAKSHNA_SPARTAN_LLVM_MODULE='<Spartan LLVM module>'
+export SLAKSHNA_SPARTAN_GIT_MODULE='<Spartan Git module>'
 source monash_exps/scripts/cluster/activate.sh
 ```
 
@@ -72,8 +128,10 @@ bash monash_exps/scripts/environment/02_lock_environment.sh
 
 The script installs project-managed Python 3.11.13, snapshots tracked Bhaskera
 files with `git archive`, and updates `environment/uv.lock`. Bhaskera is built
-from the ignored snapshot rather than inside the submodule. Review changes to
-the lockfile and `environment/bhaskera-source-revision.txt` before continuing.
+from the ignored snapshot rather than inside the submodule. This resolution
+step is run once when the pinned source or dependency specification changes;
+deployment on other clusters uses the reviewed lockfile. Review changes to the
+lockfile and `environment/bhaskera-source-revision.txt` before continuing.
 
 ### 3. Create a local venv from the lock
 
@@ -87,6 +145,9 @@ python -c 'import torch; print(torch.__version__, torch.version.cuda)'
 ```
 
 Expected Python is 3.11.13 and the PyTorch CUDA build must be at least 12.8.
+The frozen sync explicitly reinstalls Bhaskera even when its distribution
+version is unchanged, because the pinned upstream source revision may have
+changed without a package-version increment.
 
 ### 4. Run the CPU/API preflight
 
@@ -95,7 +156,32 @@ bash monash_exps/scripts/environment/05_phase0_preflight.sh cpu
 ```
 
 This checks dependencies, required APIs, Bhaskera config resolution, the exact
-submodule revision, and source-tree cleanliness without starting training.
+submodule revision, source-tree cleanliness, and equality between the installed
+Bhaskera Python sources and the pinned snapshot without starting training.
+
+### Unprivileged playit installation
+
+Cross-cluster deployments use the official playit Linux daemon and CLI from a
+checksum-pinned release. They can be installed independently with:
+
+```bash
+bash monash_exps/scripts/environment/04_install_playit.sh
+```
+
+The binaries are stored below `.runtime/tools/playit/`; no root privileges,
+system service, account secret, or tunnel configuration is created. A claimed
+agent can later forward only the Slakshna Iroh UDP port. HTTP APIs, WebSockets,
+Ray ports, and training services must remain site-local.
+
+### Slakshna release build
+
+The portable build wrapper isolates Rust from compiler-module `libstdc++`
+conflicts, locates `libclang`, uses the committed Cargo lock, and records a
+binary manifest:
+
+```bash
+bash monash_exps/scripts/environment/07_build_slakshna.sh
+```
 
 ### 5. Run a GPU preflight in Slurm
 
@@ -668,6 +754,134 @@ log likelihood improved from `3.1924703177` at G0 to `2.3317950936` at G5
 (`26.96%` relative improvement), and a fresh G5 process produced non-empty
 text. Both peer histories converged to the same 32 unique records: 12 model
 updates and 20 peer reviews.
+
+## Phase 8: cross-cluster federated training
+
+Phase 8 carries the accepted Phase 7 workload across independently deployed M3
+and Spartan A100 allocations. Each site owns only its local Dolly shard, tokenization
+cache, Slakshna database, training artifacts, and audit output. No shared
+filesystem path or direct read of the other site's files is part of the bridge
+contract. Site A retains the QA/extraction categories and Site B retains the
+brainstorming/creative/summarization categories, with 1,152 training and 128
+validation records at each site.
+
+The training contract remains five equal-weight dense FedAvg rounds, ten local
+epochs and 720 optimizer steps per round, or 50 local epochs and 3,600 steps at
+each site. The model, LoRA settings, optimizer settings, pinned input revisions,
+and these federated budgets are hashed into a path-independent contract. Site A
+creates a portable G0 bundle once; both sites verify its file, tensor-state,
+resume-state, and contract hashes before installing it locally.
+
+Slakshna treats the Python `compressed_delta` field as opaque. The Phase 8
+bridge uses that field for a strict JSON envelope containing
+`base64(zlib(safetensors-fp32))` plus the sender site and EndpointId, round,
+base-state hash, delta file and tensor-state hashes, byte counts, and tensor
+cardinality. The receiver rejects unknown fields, stale or future rounds,
+wrong senders, wrong bases, oversized payloads, malformed compression, and
+non-finite tensors before aggregation. Both sites independently reconstruct
+each global adapter and export path-free audit documents; a separate paired
+verifier proves that every outbound envelope matches what the other site
+consumed and that G1 through G5 are identical.
+
+### Bridge readiness validation
+
+Before opening an external tunnel, validate the protocol, local site
+preparation, G0 portability, and generated Slakshna configurations inside an
+allocation with at least one visible GPU:
+
+```bash
+bash monash_exps/scripts/phase8/validate_bridge_readiness.sh
+```
+
+This check runs six protocol/audit unit tests, simulates five isolated-site rounds
+using wire strings only, materializes both roles in separate local directories,
+creates and installs one G0 transfer bundle, and renders cluster-neutral
+runtimes with all public discovery and relay mechanisms disabled. It is a
+preflight, not cross-cluster training evidence.
+
+### Site preparation and G0 handoff
+
+On each cluster, prepare only the assigned role:
+
+```bash
+python monash_exps/src/phase8/prepare_site.py \
+  --site site-a --site-root <site-a-run-root>
+```
+
+Site A creates the initial bundle on one visible GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python monash_exps/src/phase8/g0_bundle.py create \
+  --site-root <site-a-run-root> --output-dir <g0-transfer-directory>
+```
+
+Transfer that directory through the experiment's approved artifact channel,
+then install it independently at both sites:
+
+```bash
+python monash_exps/src/phase8/g0_bundle.py install \
+  --bundle-dir <g0-transfer-directory> --site-root <local-site-run-root>
+```
+
+The runtime generator consumes the common `configs/phase8/two_site.toml`
+template and requires a unique federation ID, three site-local ports, the
+remote direct seed when applicable, and the remote bare EndpointId for the
+allowlist. The Iroh UDP port is the only service intended for playit exposure;
+the HTTP API, WebSocket port, Ray services, data, and credentials remain local.
+Account claiming and concrete tunnel commands are deliberately deferred to the
+communication preflight, after the bridge-readiness check passes.
+
+### Playit agent claim and UDP preflight
+
+Phase 8 uses one playit agent on M3. Spartan is the initiating Iroh client and
+does not need a second agent. Claim the M3 agent once from an interactive shell
+without piping the command through a log collector:
+
+```bash
+bash monash_exps/scripts/phase8/playit_agent.sh claim
+```
+
+The command starts the pinned unprivileged daemon with a user-scoped IPC
+socket, prints an account claim URL, and waits for browser approval. The agent
+secret is provisioned directly over local IPC into an ignored runtime file
+with mode `0600`; it is never printed. The same controller supports
+`start`, `status`, and `stop`. Do not copy the secret into shell history,
+Slurm exports, repository files, or experiment logs.
+
+With the agent online, create exactly one Custom UDP tunnel in the playit
+dashboard and assign it to the claimed M3 agent. Its local address is
+`127.0.0.1:38080`, using one port. Do not expose the Slakshna API, WebSocket,
+Ray, SSH, or any training port. Record only the tunnel's public hostname or
+IPv4 address and public UDP port; those values are public connection metadata,
+not credentials.
+
+Before starting Slakshna, the two sites run `src/phase8/udp_probe.py` through
+that tunnel. The probe carries a one-run nonce and token, accepts only the
+strict request/response schema, records no public client address, and proves
+bidirectional UDP delivery. It does not launch training. Because the pinned
+Slakshna direct-seed parser accepts a numeric `SocketAddr` rather than a DNS
+name, the Spartan-side probe resolves the playit hostname to IPv4 and the
+accepted address is then pinned into the real site configuration.
+
+After a completed run, each cluster exports its audit without transferring
+private data or local paths:
+
+```bash
+python monash_exps/src/phase8/audit_site.py \
+  --site-root <local-site-run-root> --output <site-audit.json>
+```
+
+Once both small audit files are available at one location, verify them with:
+
+```bash
+python monash_exps/src/phase8/verify_pair.py \
+  --site-a-audit <site-a-audit.json> --site-b-audit <site-b-audit.json> \
+  --output <paired-verification.json>
+```
+
+Phase 8 is accepted only when the real tunnel run completes all five rounds,
+both site audits pass, and the paired verifier reports identical global-state
+hashes. The readiness validation alone does not satisfy that criterion.
 
 ## Upstream compatibility handling
 
