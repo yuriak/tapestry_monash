@@ -33,9 +33,14 @@ phase0_require_locked_source_revision
 phase0_stage_bhaskera
 
 phase0_print_layout
-mkdir -p "$(dirname "${SLAKSHNA_UV_ENVIRONMENT}")"
+mkdir -p "$(dirname "${SLAKSHNA_UV_ENVIRONMENT}")" \
+    "${UV_CACHE_DIR}" "${UV_PYTHON_INSTALL_DIR}"
 
+echo
+echo "Ensuring project-managed Python ${SLAKSHNA_PYTHON_VERSION} is installed..."
+"${SLAKSHNA_UV_BIN}" python install "${SLAKSHNA_PYTHON_VERSION}"
 python_path="$("${SLAKSHNA_UV_BIN}" python find "${SLAKSHNA_PYTHON_VERSION}")"
+echo "Resolved Python: ${python_path}"
 
 echo
 echo "Synchronizing profile '${profile}' from the frozen lockfile..."

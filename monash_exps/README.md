@@ -41,12 +41,13 @@ If the allocation does not already expose the required tools, set
 the same command. `SLAKSHNA_SPARTAN_GIT_MODULE` is also supported when Git is
 provided only as a module.
 
-The setup command initializes the pinned submodule, installs project-local uv
-and Rust toolchains when needed, synchronizes the `primary` environment from
-the frozen lock, rebuilds Bhaskera from the pinned tracked-source snapshot,
-builds the Slakshna release binary, installs checksum-pinned unprivileged
-playit binaries, and runs the CPU/API preflight. It is idempotent and does not
-resolve a new dependency graph on the target cluster.
+The setup command initializes the pinned submodule, installs project-local uv,
+Python 3.11.13, and Rust toolchains when needed, synchronizes the `primary`
+environment from the frozen lock, rebuilds Bhaskera from the pinned
+tracked-source snapshot, builds the Slakshna release binary, installs
+checksum-pinned unprivileged playit binaries, and runs the CPU/API preflight.
+It is idempotent and does not resolve a new dependency graph on the target
+cluster.
 
 The playit account claim and tunnel assignment are deliberately separate from
 deployment. Credentials must remain outside the repository and experiment
