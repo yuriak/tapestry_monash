@@ -192,7 +192,6 @@ reset_run_state() {
         "${site_root}/api-peers.tmp.json" \
         "${site_root}/api-updates.final.json" \
         "${endpoint_file}" "${node_identity_file}" "${rust_log}" "${site_audit}"
-    mkdir -p "${data_dir}"
     render_bootstrap_runtime
     bootstrap_identity
 }
