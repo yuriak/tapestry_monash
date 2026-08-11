@@ -1,21 +1,22 @@
 # Slakshna Experiment Test Findings
 
 This document records issues found while testing Slakshna as an unmodified
-third-party dependency on the FIT Slurm cluster. It is intended as actionable
-feedback for the Slakshna maintainers. Experiment-side workarounds live under
+third-party dependency across multiple Slurm environments. It is intended as
+actionable feedback for the Slakshna maintainers. Experiment-side workarounds live under
 `monash_exps/`; the `Slakshna` submodule has not been changed.
 
 ## Tested baselines
 
 - Phase 1--7 acceptance revision: `a3112cf7aa11316d47c6bdf749a45c7071b5f9f3`
-- Phase 8 candidate revision: `f09eff9a73ae8f1080d4f0b43114b3a8aa5e99bb`
+- Phase 8 accepted revision: `f09eff9a73ae8f1080d4f0b43114b3a8aa5e99bb`
 - Installed Bhaskera distribution version: `2.2.0`
 - Python: 3.11.13
 - PyTorch: 2.9.0+cu128
 - Ray: 2.56.1
 - Transformers: 4.57.6
 - Hardware exercised: one NVIDIA A40, one node with two NVIDIA A100 40 GB
-  GPUs, and two M3 nodes with one NVIDIA A100-SXM4-80GB GPU each
+  GPUs, multiple NVIDIA A100-SXM4-80GB nodes, and two independently managed
+  sites with one A100 80 GB accelerator each
 - CUDA toolkit baseline: 12.8
 
 Phase 0 environment/API checks and Phase 1A single-GPU SFT passed. Phase 1B
@@ -49,16 +50,22 @@ both peers reconstructed identical G1--G5 adapters, and macro held-out negative
 log likelihood improved by 26.96%. The run also quantified the fixed epoch
 barrier utilization issue documented as defect 15.
 
-The Phase 8 candidate was subsequently accepted by source audit, locked Cargo
-build, three Rust identity tests, three Python delta-transport tests, CPU/GPU
-environment preflights, and a four-step single-A100 LoRA training run. The
-installed Bhaskera Python tree exactly matched the pinned source snapshot, and
-the training run produced a complete 112-tensor adapter checkpoint with finite
-loss. Source review confirms fixes for the scheduler-assigned GPU visibility
-defect and the DDP epoch-metrics collective ordering defect. Other findings
-below remain applicable unless explicitly marked otherwise.
+The Phase 8 revision was first accepted by source audit, locked Cargo build,
+Rust identity tests, Python delta-transport tests, CPU/GPU environment
+preflights, and a four-step single-A100 LoRA training run. It then completed a
+real five-round federation across two independently deployed sites with no
+shared filesystem. Each site trained for 50 local epochs and 3,600 optimizer
+steps, exchanged five authenticated dense-delta envelopes, and independently
+reconstructed the same G1--G5 states. The paired audit passed every reciprocal
+envelope and provenance check; the common final-state SHA-256 was
+`d66ea5539d65bcdfb5a8f652f5e249e865a09689ed77801d4cc6ea2cc525651f`.
+Median training loss across the full trajectory decreased by 36.84% at Site A
+and 30.81% at Site B. Source review also confirms fixes for the
+scheduler-assigned GPU visibility defect and the DDP epoch-metrics collective
+ordering defect. Other findings below remain applicable unless explicitly
+marked otherwise.
 
-The experiment-side Phase 8 bridge now removes Phase 7's shared-filesystem
+The accepted experiment-side Phase 8 bridge removes Phase 7's shared-filesystem
 assumption. Slakshna transports an opaque, versioned dense-delta envelope whose
 sender EndpointId, site role, round number, base-state hash, file hash, tensor
 hash, shape cardinality, and bounded byte counts are checked before FedAvg.

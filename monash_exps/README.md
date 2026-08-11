@@ -758,7 +758,7 @@ updates and 20 peer reviews.
 
 ## Phase 8: cross-cluster federated training
 
-Phase 8 carries the accepted Phase 7 workload across independently deployed M3
+Phase 8 carried the accepted Phase 7 workload across independently deployed M3
 and Spartan A100 allocations. Each site owns only its local Dolly shard, tokenization
 cache, Slakshna database, training artifacts, and audit output. No shared
 filesystem path or direct read of the other site's files is part of the bridge
@@ -794,7 +794,7 @@ allocation with at least one visible GPU:
 bash monash_exps/scripts/phase8/validate_bridge_readiness.sh
 ```
 
-This check runs six protocol/audit unit tests, simulates five isolated-site rounds
+This check runs eight protocol/audit unit tests, simulates five isolated-site rounds
 using wire strings only, materializes both roles in separate local directories,
 creates and installs one G0 transfer bundle, and renders cluster-neutral
 runtimes with all public discovery and relay mechanisms disabled. It is a
@@ -846,9 +846,10 @@ Each local round is required to produce 720 finite-metric optimizer steps, a
 complete checkpoint, and the expected LoRA tensor structure. Because later
 rounds start from an already-trained peer-averaged adapter, their stochastic
 within-round median loss may fluctuate; the bridge accepts at most a 5% local
-regression. Convergence is assessed over the complete five-round trajectory
-and final held-out evaluation rather than requiring every individual local
-round to improve monotonically.
+regression. Convergence is assessed over the complete five-round training-loss
+trajectory rather than requiring every individual local round to improve
+monotonically. Held-out quality remains a separate evaluation claim and is not
+inferred from the per-step training metrics.
 
 ### Playit agent claim and UDP preflight
 
@@ -901,6 +902,42 @@ python monash_exps/src/phase8/verify_pair.py \
 Phase 8 is accepted only when the real tunnel run completes all five rounds,
 both site audits pass, and the paired verifier reports identical global-state
 hashes. The readiness validation alone does not satisfy that criterion.
+
+### Accepted cross-cluster result
+
+The accepted run connected the two allowlisted Iroh endpoints through the
+single UDP ingress, completed five local-training rounds and a sixth
+aggregation-only finalizer, and shut down both nodes and the tunnel agent
+without residual listeners. Each site completed 50 local epochs and 3,600
+optimizer steps. The run took approximately 58 minutes 46 seconds from the
+first node launch to its completed site audit, including an initial 8 minute
+26 second wait for the next globally aligned epoch boundary.
+
+| Round | Site A initial loss | Site A final loss | Site B initial loss | Site B final loss | Common global state |
+|---:|---:|---:|---:|---:|---|
+| 1 | 3.0153 | 2.0873 | 3.1207 | 2.3289 | `e993744d…2ff38` |
+| 2 | 2.2260 | 2.0231 | 2.2557 | 2.2710 | `2ae74feb…9f9b3` |
+| 3 | 2.1639 | 1.9748 | 2.2014 | 2.2318 | `90eb3475…b3949` |
+| 4 | 2.1218 | 1.9355 | 2.1603 | 2.1953 | `f1243b44…7362` |
+| 5 | 2.0833 | 1.9046 | 2.1253 | 2.1591 | `d66ea553…5651f` |
+
+Across the complete trajectory, median training loss decreased by 36.84% at
+Site A and 30.81% at Site B. Site B showed small within-round regressions of
+0.68%--1.62% after Round 1, while both its starting and final losses continued
+to improve across rounds. This is the stochastic behavior covered by the 5%
+local-regression tolerance; all values remained finite and every checkpoint
+contained the expected 112 LoRA tensors.
+
+The five outbound envelopes from Site A totalled 27,997,759 bytes and those
+from Site B totalled 28,001,747 bytes. The paired verifier matched all ten
+outbound/received file hashes, sender identities, round numbers, base-state
+hashes, and global reconstructions. Both sites reported final state
+`d66ea5539d65bcdfb5a8f652f5e249e865a09689ed77801d4cc6ea2cc525651f`
+under training-contract hash
+`86c7132ba77364c8c3380e37b59e11f81a04bc4a1ee15b4e72625e9dcc0a6bcb`.
+No Python, Rust, panic, timeout, or cleanup error remained in the accepted run.
+The standalone Phase 8 report is available at
+[`progress_report/20260811_phase8_report.md`](progress_report/20260811_phase8_report.md).
 
 ## Upstream compatibility handling
 
