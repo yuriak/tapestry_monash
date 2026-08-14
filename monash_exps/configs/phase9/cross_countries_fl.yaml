@@ -1,0 +1,37 @@
+schema_version: 1
+
+federation:
+  id: slakshna-phase9-cross-countries-v1
+  name: Slakshna Phase 9 Cross-Countries Federation
+  expected_peers: 2
+  rounds: 2
+  epoch_duration_secs: 420
+  sync_deadline_secs: 390
+  run_timeout_secs: 1800
+
+playit:
+  protocol: udp
+  manage_agent: true
+  probe_attempts: 15
+  probe_timeout_secs: 2
+
+clients:
+  australia:
+    profile: australia-full
+    endpoint_id: AUTO_LOCAL_REHEARSAL
+    cuda_visible_devices: "0"
+    local_p2p_port: 38080
+    local_api_port: 39401
+    local_ws_port: 39402
+    public_host: jacobs-unsubscribe.tun.ply.gg
+    public_port: 51716
+
+  india:
+    profile: india-full
+    endpoint_id: REPLACE_WITH_INDIA_IROH_ENDPOINT_ID
+    cuda_visible_devices: "1"
+    local_p2p_port: 38081
+    local_api_port: 39411
+    local_ws_port: 39412
+    public_host: REPLACE_WITH_SECOND_PLAYIT_HOST
+    public_port: 0

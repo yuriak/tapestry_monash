@@ -9,6 +9,8 @@ actionable feedback for the Slakshna maintainers. Experiment-side workarounds li
 
 - Phase 1--7 acceptance revision: `a3112cf7aa11316d47c6bdf749a45c7071b5f9f3`
 - Phase 8 accepted revision: `f09eff9a73ae8f1080d4f0b43114b3a8aa5e99bb`
+- Phase 9 stock-release rehearsal revision:
+  `9f93ec45ae0d3eb9c901aff3b50d4325b5050488` (`v0.1.1-alpha`)
 - Installed Bhaskera distribution version: `2.2.0`
 - Python: 3.11.13
 - PyTorch: 2.9.0+cu128
@@ -74,6 +76,19 @@ ML-engine failure-handling limitation in defect 9 remains particularly
 important for cross-cluster operation, so Phase 8 uses independent site and
 paired audit documents rather than treating node liveness or exit status as
 acceptance evidence.
+
+Phase 9 then passed a stock-code two-client rehearsal through two real public
+Playit UDP endpoints, with every alternate discovery and relay path disabled.
+The Australia client tokenized and trained on all 4,414 local examples; the
+India client did the same for all 9,781 examples. Both completed two 50-step
+OLMo-1B LoRA rounds, exchanged compressed model updates through Iroh Gossip,
+loaded the remote delta in round two, and produced two-member aggregation
+state. Australia loss decreased from 2.4192 to 1.6082 and India loss from
+2.6537 to 1.6470 across the run. The generated full-data caches were unchanged
+between rounds, and both independent audits accepted 100 finite loss records,
+the step-50 adapter checkpoint, network evidence, and federated state. This
+rehearsal validates the deployment procedure for the planned two-country run;
+it does not by itself claim distinct physical-cluster placement.
 
 ## Confirmed runtime defects
 
