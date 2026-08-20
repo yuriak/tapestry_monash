@@ -1,0 +1,18 @@
+model:
+  name: "monash_exps/.runtime/models/m0/OLMo-2-1124-7B-Instruct"
+  trust_remote_code: false
+
+data:
+  name: "local"
+  format: "chatml"
+  format_options:
+    messages_field: "messages"
+  seq_len: 1024
+  cache_dir: null
+  train_path: null
+  overwrite_cache: false
+  num_workers: 8
+  tokenize_batch_size: 128
+  tokenize_compression: "snappy"
+  is_cpt: false
+  pack_sequences: false

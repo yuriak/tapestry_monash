@@ -1,0 +1,90 @@
+# Five-step, single-A100 throughput/memory calibration.
+# Run from the outer repository root through 07_single_gpu_batch8_calibration.sh.
+
+model:
+  # The launcher resolves these tokens to absolute paths before Ray starts.
+  name: "__M0_MODEL_PATH__"
+  trust_remote_code: false
+  dtype: "bfloat16"
+  attn_impl: "flash_attention_2"
+  use_liger_kernel: true
+  quantization: "none"
+
+data:
+  name: "local"
+  format: "chatml"
+  format_options:
+    messages_field: "messages"
+  tokenized_path: "__M0_TOKENIZED_PATH__"
+  seq_len: 1024
+  num_workers: 4
+  prefetch_batches: 1
+  local_shuffle_buffer_multiplier: 10
+  is_cpt: false
+  pack_sequences: false
+
+lora:
+  enabled: true
+  r: 16
+  alpha: 64
+  dropout: 0.03
+  target_modules: ["q_proj", "v_proj"]
+  include_experts: false
+  freeze_router: true
+  modules_to_save: []
+  resume_path: "__M0_G0_PATH__"
+
+training:
+  batch_size: 8
+  grad_accum: 1
+  lr: 1.0e-4
+  weight_decay: 0.0
+  max_steps: 5
+  num_epochs: 1
+  warmup_steps: 1
+  max_grad_norm: 1.0
+  grad_clip: 1.0
+  max_grad_skip_steps: 10
+  seed: 20260820
+  deterministic: false
+  optimizer:
+    backend: "default"
+  distributed:
+    strategy: "ddp"
+    ddp:
+      find_unused_parameters: false
+      gradient_as_bucket_view: true
+      broadcast_buffers: false
+      activation_checkpointing: false
+      static_graph: false
+
+# No 14 GB DCP is needed for a five-step throughput calibration.
+checkpoint:
+  enabled: false
+  save_dir: "__M0_CHECKPOINT_PATH__"
+  save_interval: 1
+  keep_last_n: 1
+
+logging:
+  tracker: "ray"
+  project: "m0"
+  run_name: "calibrate-olmo2-7b-single-a100-batch8"
+  log_gpu_every_n_steps: 1
+  tags: ["m0", "calibration", "olmo2-7b", "single-a100", "batch8"]
+
+evaluation:
+  enabled: false
+
+monitoring:
+  dashboard: false
+  metrics:
+    enabled: true
+    system_every_n_steps: 1
+    cuda_every_n_steps: 1
+    gpu: true
+    cpu: true
+    cuda_memory: true
+    throughput: true
+    peak_tflops_per_gpu: 312.0
+    throughput_window: 3
+    throughput_warmup: 1
