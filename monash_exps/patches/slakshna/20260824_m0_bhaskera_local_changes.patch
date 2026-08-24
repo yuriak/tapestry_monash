@@ -1,0 +1,389 @@
+diff --git a/.gitignore b/.gitignore
+index 597c4f4..006e15a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -12,6 +12,7 @@ Cargo.lock
+ .DS_Store
+ /ml_models
+ /ml_states
++/m0_runtime
+ venv/
+ benchmark_data
+ # data_node*
+@@ -24,4 +25,4 @@ patch_*
+ hf_cache
+ /.claude
+ /docs
+-Claude.md
+\ No newline at end of file
++Claude.md
+diff --git a/Bhaskera/ARCHITECTURE.md b/Bhaskera/ARCHITECTURE.md
+index 263c63e..eac6f8c 100644
+--- a/Bhaskera/ARCHITECTURE.md
++++ b/Bhaskera/ARCHITECTURE.md
+@@ -397,7 +397,13 @@ Inside, `_run_epoch` is the workhorse described in §3.2. A few subtleties worth
+
+ - **Loss EMA & spike ratio.** A running EMA of the loss (`loss_ema_alpha=0.05`) and the ratio `window_loss / loss_ema` are logged every step. The spike ratio is a cheap leading indicator of divergence — values consistently above 2× usually mean LR is too high or aux loss is fighting the main loss.
+ - **Non-finite grad protection.** If `clip_grad_norm_` returns NaN/Inf, the optimizer step is skipped, `optimizer.zero_grad(set_to_none=True)` is called, and the step counter does **not** advance. After `cfg.training.max_grad_skip_steps` consecutive skips the run aborts.
+-- **Best-by-loss checkpoint retention.** `save_and_prune` keeps `cfg.checkpoint.keep_last_n` checkpoints sorted by ascending `avg_loss` — not by step.
++- **Recovery-state retention.** DCP keeps the most recent
++  `cfg.checkpoint.keep_last_n` completed checkpoints, ensuring the newest
++  recoverable state is not deleted merely because an older epoch had lower
++  average loss. Optional step-based LoRA-only snapshots are stored separately
++  under `checkpoint.adapter_save_dir`; they do not contain optimizer or frozen
++  base-model state. DCP metadata includes scheduler state so a resumed run
++  continues the same learning-rate trajectory.
+
+ **Pluggable optimizer (`trainer.optim` + `trainer.optimizer_registry`).** `build_optimizer(model, cfg)` dispatches on `cfg.training.optimizer.backend`:
+
+@@ -724,7 +730,7 @@ The full lifecycle of one token, from raw JSONL on disk to an entry in MLflow:
+                 rank 0 write meta.json + .complete
+                           │
+                           ▼
+-                rank 0 prune to keep_last_n by avg_loss
++                rank 0 retain newest keep_last_n DCP states
+                           │
+                           ▼
+                     dist.barrier (release)
+@@ -1037,7 +1043,7 @@ For each top-level key in YAML, see the corresponding dataclass in `src/bhaskera
+ | `training`             | `TrainingConfig`      | `batch_size`, `grad_accum`, `lr`, `weight_decay`, `max_steps`, `num_epochs`, `warmup_steps`, `max_grad_norm`, `grad_clip`, `max_grad_skip_steps`, `seed`, `deterministic`. |
+ | `training.optimizer`   | `OptimizerConfig`     | `backend: "default"\|"torch"\|"plugin"`, `class_name` (for `torch`), `name` (for `plugin`), `kwargs: dict`. |
+ | `training.distributed` | `DistributedConfig`   | `strategy: fsdp\|ddp` + nested `fsdp` / `ddp` blocks. |
+-| `checkpoint`           | `CheckpointConfig`    | `enabled`, `save_dir`, `save_interval` (in epochs), `keep_last_n` (best by avg loss). |
++| `checkpoint`           | `CheckpointConfig`    | `enabled`, `save_dir`, `save_interval` (epochs), `keep_last_n` (most recent DCP states), `adapter_save_dir`, `adapter_save_interval` (optimizer steps; `0` disables). |
+ | `logging`              | `LoggingConfig`       | `tracker` (`"mlflow"` / `"wandb"` / `"ray"` / list / none), `project`, `run_name`, `mlflow_tracking_uri`, `mlflow_log_all_ranks`, `mlflow_log_artifacts_every`, `tags`, `group`. |
+ | `evaluation`           | `EvaluationConfig`    | `enabled`, `offload_optimizer`. |
+ | `evaluation.validation`| `ValidationConfig`    | `dataset`, `every_n_steps`, `every_n_epochs`, `metrics: list[str]` (e.g. `[loss, perplexity, token_accuracy]`). |
+diff --git a/Bhaskera/README.md b/Bhaskera/README.md
+index e6b340c..920dd99 100644
+--- a/Bhaskera/README.md
++++ b/Bhaskera/README.md
+@@ -89,7 +89,9 @@ All runs are driven by a single YAML file passed via `--config`. The schema is d
+ - `training` — batch size, gradient accumulation, LR schedule, distributed strategy block
+ - `training.optimizer` — `backend: "default"|"torch"|"plugin"`, `class_name` (for built-in torch), `name` (for plugin), `kwargs`
+ - `training.distributed` — `strategy: fsdp | ddp` plus an `fsdp` and `ddp` sub-block
+-- `checkpoint` — save directory, interval, retention
++- `checkpoint` — DCP save directory, epoch interval and recent-state
++  retention; optional `adapter_save_dir` and `adapter_save_interval` provide
++  lightweight step-based LoRA trajectory snapshots
+ - `logging` — tracker selection (`wandb`, `mlflow`, `ray`, list, or `none`), project, run name
+ - `evaluation` — `enabled`, `offload_optimizer`, `validation` (metrics, frequency), `benchmarks` (tasks, frequency)
+ - `monitoring` — Ray Dashboard host/port, metrics export port, per-step metric toggles
+diff --git a/Bhaskera/src/bhaskera/config.py b/Bhaskera/src/bhaskera/config.py
+index 1d25bd3..ffa0d27 100644
+--- a/Bhaskera/src/bhaskera/config.py
++++ b/Bhaskera/src/bhaskera/config.py
+@@ -188,6 +188,8 @@ class CheckpointConfig:
+     save_dir: str = "./checkpoints"
+     save_interval: int = 1
+     keep_last_n: int = 2
++    adapter_save_dir: Optional[str] = None
++    adapter_save_interval: int = 0
+
+
+ @dataclass
+@@ -394,6 +396,8 @@ def _dict_to_config(raw: dict) -> Config:
+             save_dir=str(ckpt_raw.get("save_dir", "./checkpoints")),
+             save_interval=int(ckpt_raw.get("save_interval", 1)),
+             keep_last_n=int(ckpt_raw.get("keep_last_n", 2)),
++            adapter_save_dir=ckpt_raw.get("adapter_save_dir"),
++            adapter_save_interval=int(ckpt_raw.get("adapter_save_interval", 0)),
+         ),
+         logging=LoggingConfig(
+             tracker=log_raw.get("tracker"),
+diff --git a/Bhaskera/src/bhaskera/distributed/README.md b/Bhaskera/src/bhaskera/distributed/README.md
+index 86331de..d447da2 100644
+--- a/Bhaskera/src/bhaskera/distributed/README.md
++++ b/Bhaskera/src/bhaskera/distributed/README.md
+@@ -120,7 +120,9 @@ Scans `save_dir` for `step_<N>/` directories with a `.complete` sentinel (partia
+
+ ### `save_and_prune`
+
+-Compatibility wrapper used by the training loop. Calls `save_checkpoint`, then maintains a `best_ckpts` list sorted by `avg_loss` and trimmed to `keep_last_n`.
++Compatibility wrapper used by older callers. The active trainer wrapper passes
++`keep_last_n` into `save_checkpoint`, which retains the newest completed DCP
++states so the final recovery point is never pruned in favour of an older loss.
+
+ ## Strategy selection summary
+
+diff --git a/Bhaskera/src/bhaskera/launcher/train.py b/Bhaskera/src/bhaskera/launcher/train.py
+index 1be571e..3b7a2bc 100644
+--- a/Bhaskera/src/bhaskera/launcher/train.py
++++ b/Bhaskera/src/bhaskera/launcher/train.py
+@@ -67,7 +67,7 @@ def main() -> None:
+
+     # ── Dynamic Resource Allocation ──
+     # Automatically allocate resources without hardcoding magic numbers.
+-    total_cpus = os.cpu_count() or 64
++    total_cpus = _count_cpus()
+     data_workers = getattr(cfg.data, "num_workers", 0)
+
+     # Ray Data operators (like Repartition/AllToAll) require extra unallocated CPUs to run.
+@@ -128,7 +128,7 @@ def _init_ray(monitoring) -> None:
+         logger.info(f"Starting local Ray cluster ({n_gpus} GPU(s))")
+
+         init_kwargs = {
+-            "num_cpus": os.cpu_count(),
++            "num_cpus": _count_cpus(),
+             "num_gpus": n_gpus,
+         }
+         init_kwargs.update(monitoring.ray_init_kwargs())
+@@ -164,5 +164,24 @@ def _count_gpus() -> int:
+     return n
+
+
++def _count_cpus() -> int:
++    """Return CPUs granted to this process rather than the whole Slurm node."""
++    slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
++    if slurm_cpus:
++        try:
++            value = int(slurm_cpus)
++            if value > 0:
++                return value
++        except ValueError:
++            pass
++    try:
++        affinity_count = len(os.sched_getaffinity(0))
++        if affinity_count > 0:
++            return affinity_count
++    except (AttributeError, OSError):
++        pass
++    return os.cpu_count() or 64
++
++
+ if __name__ == "__main__":
+     main()
+diff --git a/Bhaskera/src/bhaskera/trainer/README.md b/Bhaskera/src/bhaskera/trainer/README.md
+index b43bea4..662b786 100644
+--- a/Bhaskera/src/bhaskera/trainer/README.md
++++ b/Bhaskera/src/bhaskera/trainer/README.md
+@@ -144,7 +144,8 @@ FSDP path does not use this — `MixedPrecisionPolicy` from `bhaskera.distribute
+
+ Thin compatibility wrappers around `bhaskera.distributed.checkpoint`:
+
+-- `save_and_prune(model, optimizer, step, avg_loss, ckpt_cfg, rank, best_ckpts)` — calls `save_checkpoint` from the distributed module, then on rank-0 maintains a `best_ckpts` list sorted by `avg_loss` ascending and trims it to `ckpt_cfg.keep_last_n`. Returns the updated list. Collective: all ranks must call.
++- `save_and_prune(model, optimizer, scheduler, step, avg_loss, ckpt_cfg, rank, best_ckpts)` — calls `save_checkpoint` from the distributed module, stores scheduler state in checkpoint metadata, and retains the newest `ckpt_cfg.keep_last_n` completed DCP recovery states. Collective: all ranks must call.
++- `save_adapter_snapshot(model, step, save_dir, rank, extra)` — rank 0 atomically writes an immutable LoRA-only Safetensors snapshot plus checksum metadata at an optimizer-step boundary. All ranks participate in the surrounding barriers.
+ - `maybe_resume(model, optimizer, save_dir)` — scans `save_dir` for `step_<N>` directories and forwards to `load_checkpoint` for the latest. Returns 0 when no candidates exist.
+
+ The lower-level atomic-write semantics (`.complete` sentinel, `<path>.tmp` staging, DCP version shim) live in `bhaskera.distributed.checkpoint` — see that README.
+diff --git a/Bhaskera/src/bhaskera/trainer/checkpointing.py b/Bhaskera/src/bhaskera/trainer/checkpointing.py
+index b48c098..7612854 100644
+--- a/Bhaskera/src/bhaskera/trainer/checkpointing.py
++++ b/Bhaskera/src/bhaskera/trainer/checkpointing.py
+@@ -7,6 +7,8 @@ Periodic-save and resume helpers.
+ """
+ from __future__ import annotations
+
++import hashlib
++import json
+ import logging
+ import os
+ import re
+@@ -27,6 +29,7 @@ def save_and_prune(
+     *,
+     model,
+     optimizer,
++    scheduler,
+     step: int,
+     avg_loss: float,
+     ckpt_cfg,
+@@ -35,8 +38,8 @@ def save_and_prune(
+     cursor_meta: dict | None = None,
+ ) -> list[tuple[float, str]]:
+     """
+-    Save a checkpoint directory and prune down to ckpt_cfg.keep_last_n
+-    best-by-loss.  All ranks must call this — it runs a collective.
++    Save a recoverable checkpoint and retain the most recent
++    ckpt_cfg.keep_last_n states. All ranks must call this collective.
+     """
+     Path(ckpt_cfg.save_dir).mkdir(parents=True, exist_ok=True)
+     ckpt_path = os.path.join(ckpt_cfg.save_dir, f"step_{step:07d}")
+@@ -50,25 +53,108 @@ def save_and_prune(
+         optimizer=optimizer,
+         step=step,
+         path=ckpt_path,
+-        extra={"avg_loss": float(avg_loss)},
++        extra={
++            "avg_loss": float(avg_loss),
++            "scheduler_state": scheduler.state_dict(),
++        },
+         cursor_meta=cursor_meta,
++        rank=rank,
++        keep_last_n=ckpt_cfg.keep_last_n,
+     )
+
+-    # Only rank 0 manages the "best" list on disk.
++    # Ray exposes this list as result metadata. DCP itself owns retention and
++    # deliberately keeps the newest recovery states, never an older
++    # best-by-loss state at the expense of the final recoverable checkpoint.
+     if rank == 0:
+         best_ckpts.append((avg_loss, ckpt_path))
+         best_ckpts.sort(key=lambda x: x[0])  # ascending: lower loss is better
+-        while len(best_ckpts) > ckpt_cfg.keep_last_n:
+-            _, old_path = best_ckpts.pop()
+-            _safe_rmtree(old_path)
++        best_ckpts = [(loss, path) for loss, path in best_ckpts if Path(path).exists()]
+         logger.info(
+             f"Checkpoint → {ckpt_path} | "
+-            f"kept: {[os.path.basename(p) for _, p in best_ckpts]}"
++            f"recoverable: {[os.path.basename(p) for _, p in best_ckpts]}"
+         )
+
+     return best_ckpts
+
+
++def save_adapter_snapshot(
++    *,
++    model,
++    step: int,
++    save_dir: str,
++    rank: int,
++    extra: dict | None = None,
++) -> None:
++    """Atomically export a lightweight, immutable LoRA-only snapshot.
++
++    The formal M0 runs use DDP, so every rank has a complete adapter and only
++    rank 0 writes. Barriers keep all ranks at the same optimizer boundary.
++    Existing completed snapshots are left untouched, which makes DCP resume
++    safe without rewriting trajectory history.
++    """
++    if not save_dir:
++        raise ValueError("adapter snapshot save_dir must be non-empty")
++
++    if dist.is_available() and dist.is_initialized():
++        dist.barrier()
++
++    if rank == 0:
++        from safetensors.torch import save_file
++
++        final_path = Path(save_dir) / f"step_{step:07d}"
++        tmp_path = Path(f"{final_path}.tmp")
++        complete = final_path / ".complete"
++        adapter_file = final_path / "adapter_model.safetensors"
++        metadata_file = final_path / "meta.json"
++
++        if complete.exists() and adapter_file.is_file() and metadata_file.is_file():
++            logger.info(f"Adapter snapshot already complete → {final_path}")
++        else:
++            _safe_rmtree(str(tmp_path))
++            if final_path.exists():
++                _safe_rmtree(str(final_path))
++            tmp_path.mkdir(parents=True, exist_ok=False)
++
++            lora_sd: dict[str, torch.Tensor] = {}
++            for name, param in model.named_parameters():
++                if "lora_" not in name:
++                    continue
++                clean_name = name.removeprefix("module.")
++                clean_name = re.sub(
++                    r"(lora_[AB])\.[^.]+\.(weight)", r"\1.\2", clean_name
++                )
++                lora_sd[clean_name] = param.detach().cpu().float().contiguous()
++
++            if not lora_sd:
++                _safe_rmtree(str(tmp_path))
++                raise RuntimeError("No LoRA parameters found for adapter snapshot")
++
++            tmp_adapter = tmp_path / "adapter_model.safetensors"
++            save_file(lora_sd, str(tmp_adapter))
++            digest = hashlib.sha256(tmp_adapter.read_bytes()).hexdigest()
++            metadata = {
++                "format": "safetensors",
++                "parameter_count": sum(t.numel() for t in lora_sd.values()),
++                "sha256": digest,
++                "step": int(step),
++                "tensor_count": len(lora_sd),
++            }
++            if extra:
++                metadata.update(extra)
++            (tmp_path / "meta.json").write_text(
++                json.dumps(metadata, indent=2, sort_keys=True) + "\n"
++            )
++            (tmp_path / ".complete").touch()
++            final_path.parent.mkdir(parents=True, exist_ok=True)
++            os.rename(tmp_path, final_path)
++            logger.info(
++                f"Adapter snapshot → {final_path} | tensors={len(lora_sd)} | sha256={digest}"
++            )
++
++    if dist.is_available() and dist.is_initialized():
++        dist.barrier()
++
++
+ def maybe_resume(model, optimizer, save_dir: str) -> tuple[int, dict]:
+     """Resume from the highest-step checkpoint directory under `save_dir`.
+     Returns (step, meta_dict). meta_dict contains all meta.json keys
+diff --git a/Bhaskera/src/bhaskera/trainer/loop.py b/Bhaskera/src/bhaskera/trainer/loop.py
+index af3d986..fda146b 100644
+--- a/Bhaskera/src/bhaskera/trainer/loop.py
++++ b/Bhaskera/src/bhaskera/trainer/loop.py
+@@ -43,7 +43,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
+ from bhaskera.introspect import ModelProfile
+ from bhaskera.utils import ThroughputTracker
+ from bhaskera.utils.system_stats import system_stats, cuda_memory_stats
+-from .checkpointing import maybe_resume, save_and_prune
++from .checkpointing import maybe_resume, save_adapter_snapshot, save_and_prune
+ from .eval_lifecycle import (
+     DatasetCursor,
+     EvaluationLifecycle,
+@@ -141,6 +141,15 @@ def train(
+     _resume_meta: dict = {}
+     if ckpt_cfg.enabled:
+         step, _resume_meta = maybe_resume(model, optimizer, ckpt_cfg.save_dir)
++        scheduler_state = _resume_meta.get("scheduler_state")
++        if scheduler_state:
++            scheduler.load_state_dict(scheduler_state)
++            logger.info(f"Scheduler state restored at step {step}")
++        elif step > 0:
++            logger.warning(
++                "Checkpoint predates scheduler-state persistence; learning-rate "
++                "state could not be restored exactly."
++            )
+         model.train()
+
+     # Restore dataset cursor from checkpoint so the iterator can be
+@@ -210,6 +219,17 @@ def train(
+         if step >= train_cfg.max_steps:
+             break
+
++    adapter_interval = int(getattr(ckpt_cfg, "adapter_save_interval", 0))
++    adapter_dir = getattr(ckpt_cfg, "adapter_save_dir", None)
++    if adapter_interval > 0 and adapter_dir and step > 0:
++        save_adapter_snapshot(
++            model=model,
++            step=step,
++            save_dir=adapter_dir,
++            rank=rank,
++            extra={"final": True},
++        )
++
+     if tracker:
+         tracker.finish()
+     if rank == 0:
+@@ -517,6 +537,17 @@ def _run_epoch(
+                 if sysm:
+                     tracker.log(sysm, step=step)
+
++        adapter_interval = int(getattr(ckpt_cfg, "adapter_save_interval", 0))
++        adapter_dir = getattr(ckpt_cfg, "adapter_save_dir", None)
++        if adapter_interval > 0 and adapter_dir and step % adapter_interval == 0:
++            save_adapter_snapshot(
++                model=model,
++                step=step,
++                save_dir=adapter_dir,
++                rank=rank,
++                extra={"epoch": int(epoch), "loss": float(window_loss)},
++            )
++
+         # ── Evaluation & Benchmarking ──────────────────────────────
+         ran_eval = False
+         _needs_val   = evaluator.should_run_validation(step)
+@@ -627,6 +658,7 @@ def _run_epoch(
+         best_ckpts = save_and_prune(
+             model=model,
+             optimizer=optimizer,
++            scheduler=scheduler,
+             step=step,
+             avg_loss=avg_loss,
+             ckpt_cfg=ckpt_cfg,

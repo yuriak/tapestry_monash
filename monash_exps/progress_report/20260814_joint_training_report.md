@@ -250,11 +250,11 @@ evaluation and should not be presented as validation loss.
 
 ### Australian node
 
-![Australian step-1 loss by local invocation](../../loss_curves/bc23d941-48cd-4063-8bd9-fa9cda32c0ec.jpeg)
+![Australian step-1 loss by local invocation](20260814_joint_training_assets/bc23d941-48cd-4063-8bd9-fa9cda32c0ec.jpeg)
 
 ### Indian node
 
-![Indian step-1 loss by local invocation](../../loss_curves/5ae857f9-a645-49e4-a270-9d99b641ece2.jpeg)
+![Indian step-1 loss by local invocation](20260814_joint_training_assets/5ae857f9-a645-49e4-a270-9d99b641ece2.jpeg)
 
 The difference in scale is not, by itself, evidence of an algorithmic error:
 each point represents one locally sampled batch. The post-run delta inspection

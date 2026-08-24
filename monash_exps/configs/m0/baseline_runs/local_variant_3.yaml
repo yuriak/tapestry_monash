@@ -1,0 +1,77 @@
+model:
+  name: "__M0_MODEL_PATH__"
+  trust_remote_code: false
+  dtype: "bfloat16"
+  attn_impl: "flash_attention_2"
+  use_liger_kernel: true
+  quantization: "none"
+data:
+  name: "local"
+  format: "chatml"
+  format_options: {messages_field: "messages"}
+  tokenized_path: "__M0_TOKENIZED_PATH__"
+  seq_len: 1024
+  num_workers: 4
+  prefetch_batches: 1
+  local_shuffle_buffer_multiplier: 10
+  is_cpt: false
+  pack_sequences: false
+lora:
+  enabled: true
+  r: 16
+  alpha: 64
+  dropout: 0.03
+  target_modules: ["q_proj", "v_proj"]
+  include_experts: false
+  freeze_router: true
+  modules_to_save: []
+  resume_path: "__M0_G0_PATH__"
+training:
+  batch_size: 2
+  grad_accum: 4
+  lr: 1.0e-4
+  weight_decay: 0.0
+  max_steps: 11238
+  num_epochs: 2
+  warmup_steps: 338
+  max_grad_norm: 1.0
+  grad_clip: 1.0
+  max_grad_skip_steps: 10
+  seed: 20260820
+  deterministic: false
+  optimizer: {backend: "default"}
+  distributed:
+    strategy: "ddp"
+    ddp:
+      find_unused_parameters: false
+      gradient_as_bucket_view: true
+      broadcast_buffers: false
+      activation_checkpointing: false
+      static_graph: false
+checkpoint:
+  enabled: true
+  save_dir: "__M0_DCP_DIR__"
+  save_interval: 1
+  keep_last_n: 1
+  adapter_save_dir: "__M0_ADAPTER_DIR__"
+  adapter_save_interval: 450
+logging:
+  tracker: "ray"
+  project: "m0-t5"
+  run_name: "local-variant-3"
+  log_gpu_every_n_steps: 10
+  tags: ["m0", "t5", "local", "variant-3", "olmo2-7b"]
+evaluation: {enabled: false}
+monitoring:
+  dashboard: false
+  metrics:
+    enabled: true
+    system_every_n_steps: 10
+    cuda_every_n_steps: 10
+    gpu: true
+    cpu: true
+    cuda_memory: true
+    throughput: true
+    peak_tflops_per_gpu: 312.0
+    throughput_window: 50
+    throughput_warmup: 5

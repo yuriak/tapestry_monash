@@ -222,6 +222,7 @@ __marimo__/
 *.parquet
 *.arrow
 *.bundle
+/local_data/
 
 # Repository scratch files
 query.txt
@@ -235,3 +236,11 @@ reply.txt
 /tmp2.sh
 /output*.txt
 /p8_*.lo
+/TODO.md
+/m0_*output*.txt
+/m0_*spartan*.sh
+/m0_*spartan*.sbatch
+/m0_*rsync*.sh
+/m0_pull_*.sh
+/smux-*.out
+/smux-*.err
