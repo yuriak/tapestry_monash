@@ -961,3 +961,39 @@ accepted as evidence.
 submodule. If an upstream change becomes unavoidable, place a minimal,
 revision-specific patch under `monash_exps/patches/` and apply it only to a
 staged snapshot or disposable worktree.
+
+## M0 two-site local federated training
+
+The M0 local-federation workflow trains OLMo 2 7B with two GPUs per site and
+an effective site batch of 16. Ten federated rounds represent exactly two
+complete site-local data passes: rounds 1--5 partition the first pass and
+rounds 6--10 partition the second. The Australia/New Zealand site uses 9,337
+original tokenized rows and the South Asia site uses 15,331. Each pass is
+deterministically padded to a multiple of the effective batch (7 and 13 rows,
+respectively); padding identities and all original source indices are recorded
+in the shard manifest.
+
+Generate the ignored, portable Parquet shards from the frozen token caches:
+
+```bash
+python -m monash_exps.src.m0_fl.build_round_shards \
+  --cache-root monash_exps/.runtime/data/m0/tokenized/olmo2-7b-chatml-seq1024 \
+  --output-root monash_exps/.runtime/data/m0/fl_round_shards
+```
+
+Runtime preparation verifies both complete passes, installs ten immutable
+round directories, and renders their absolute paths into the site template.
+The local step sequence is `117,117,117,117,116` per Australia/New Zealand
+pass and `192,192,192,192,191` per South Asia pass. Every invocation has
+`num_epochs: 1` and checkpoint interval 1; the shard-specific `max_steps`
+controls local work.
+
+The upstream checkouts remain unchanged. Runtime preparation copies the pinned
+Slakshna ML engine and Bhaskera Python package into the ignored run directory,
+then applies two revision-checked compatibility changes: federated round
+numbers select declared shards, and DDP checkpoint finalization receives the
+actual worker rank. Formal mode rejects missing checkpoints, tokenization
+fallback, undeclared rounds, and dummy, empty, non-finite, all-zero, or
+wrong-schema LoRA deltas before broadcast. Completion additionally requires
+ten selection records, ten non-zero delta audits, ten loadable aggregated
+snapshots, and a final 128-tensor rank-16 q/v adapter.

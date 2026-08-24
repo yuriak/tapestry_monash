@@ -22,6 +22,17 @@ run_id="${M0_FL_RUN_ID:-m0-local-fl-$(date +%Y%m%dT%H%M%S)}"
     echo "Playit configuration is missing: ${playit_config}" >&2
     exit 1
 }
+for site in au india; do
+    shard_root="${workspace}/monash_exps/.runtime/data/m0/fl_round_shards/${site}"
+    [[ -s "${shard_root}/round-shards-manifest.json" ]] || {
+        echo "Missing formal round-shard manifest: ${shard_root}" >&2
+        exit 1
+    }
+    [[ "$(find "${shard_root}" -name '*.parquet' | wc -l)" -eq 10 ]] || {
+        echo "Expected ten formal round shards under ${shard_root}" >&2
+        exit 1
+    }
+done
 
 command=(
     sbatch

@@ -33,6 +33,8 @@ FAILURE_MARKERS = (
 SITES = ("au", "india")
 PLAYIT_INGRESS_SITE = "india"
 ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+EXPECTED_LORA_TENSORS = 128
+EXPECTED_LORA_PARAMETERS = 8_388_608
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -584,6 +586,105 @@ def start_gpu_monitor(output: Path) -> tuple[subprocess.Popen[bytes], Any]:
     return process, handle
 
 
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        raise RuntimeError(f"required audit log is missing: {path}")
+    records = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(f"invalid JSONL at {path}:{line_number}: {error}") from error
+        if not isinstance(value, dict):
+            raise TypeError(f"non-object JSONL record at {path}:{line_number}")
+        records.append(value)
+    return records
+
+
+def audit_lora_state(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise RuntimeError(f"LoRA state is missing: {path}")
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(state, dict) or "dummy" in state:
+        raise RuntimeError(f"invalid or dummy LoRA state: {path}")
+    if len(state) != EXPECTED_LORA_TENSORS:
+        raise RuntimeError(
+            f"LoRA tensor count mismatch in {path}: {len(state)} != {EXPECTED_LORA_TENSORS}"
+        )
+    parameter_count = sum(
+        value.numel() for value in state.values() if torch.is_tensor(value)
+    )
+    if parameter_count != EXPECTED_LORA_PARAMETERS:
+        raise RuntimeError(
+            f"LoRA parameter count mismatch in {path}: "
+            f"{parameter_count} != {EXPECTED_LORA_PARAMETERS}"
+        )
+    if any(
+        not torch.is_tensor(value)
+        or not value.is_floating_point()
+        or not torch.isfinite(value).all().item()
+        for value in state.values()
+    ):
+        raise RuntimeError(f"LoRA state contains invalid tensors: {path}")
+    return {
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "tensor_count": len(state),
+        "parameter_count": parameter_count,
+    }
+
+
+def audit_formal_site(runtime: Path, node_id: str) -> dict[str, Any]:
+    manifest = json.loads(
+        (runtime / "preparation-manifest.json").read_text(encoding="utf-8")
+    )
+    expected_shards = manifest["round_shards"]
+    if [item["round"] for item in expected_shards] != list(range(1, 11)):
+        raise RuntimeError("preparation manifest does not declare rounds 1..10")
+
+    selections = read_jsonl(runtime / "logs/round_data_selection.jsonl")
+    delta_audits = read_jsonl(runtime / "logs/local_delta_audit.jsonl")
+    if len(selections) != 10 or len(delta_audits) != 10:
+        raise RuntimeError(
+            f"expected ten selection/delta audits, got {len(selections)}/{len(delta_audits)}"
+        )
+    for expected, selected, delta in zip(expected_shards, selections, delta_audits):
+        round_index = expected["round"]
+        if selected.get("round") != round_index or delta.get("round") != round_index:
+            raise RuntimeError(f"round audit order mismatch at {round_index}")
+        for key in ("rows", "max_steps", "parquet_sha256"):
+            if selected.get(key) != expected.get(key):
+                raise RuntimeError(
+                    f"round {round_index} selected {key} differs from manifest"
+                )
+        if delta.get("tensor_count") != EXPECTED_LORA_TENSORS:
+            raise RuntimeError(f"round {round_index} delta tensor count is invalid")
+        if delta.get("parameter_count") != EXPECTED_LORA_PARAMETERS:
+            raise RuntimeError(f"round {round_index} delta parameter count is invalid")
+        if not isinstance(delta.get("l2_norm"), (int, float)) or delta["l2_norm"] <= 0:
+            raise RuntimeError(f"round {round_index} delta norm is invalid")
+
+    sync_root = runtime / "ml_models" / f"sync_ckpt_{node_id}"
+    sync_states = [
+        audit_lora_state(sync_root / f"sync_round_{round_index}.pth")
+        for round_index in range(1, 11)
+    ]
+    final_state = audit_lora_state(runtime / "ml_models" / f"{node_id}_base_lora.pth")
+    state_path = runtime / "ml_states" / f"{node_id}_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if state.get("round") != 10:
+        raise RuntimeError(f"ML state stopped at round {state.get('round')}, expected 10")
+    return {
+        "rounds": 10,
+        "complete_source_passes": manifest["complete_source_passes"],
+        "padding_rows": manifest["padding_rows"],
+        "selection_rounds": [item["round"] for item in selections],
+        "delta_l2_norms": [item["l2_norm"] for item in delta_audits],
+        "sync_states": sync_states,
+        "final_state": final_state,
+    }
+
+
 def main() -> int:
     rank = int(os.environ.get("SLURM_PROCID", "-1"))
     if rank not in (0, 1):
@@ -783,6 +884,7 @@ def main() -> int:
         raise RuntimeError(
             f"incomplete FL run: local={node.local_completions}, epochs={node.epoch_completions}"
         )
+    artifact_audit = audit_formal_site(runtime, node_id)
     completion = {
         "status": "COMPLETED",
         "site": site,
@@ -791,6 +893,7 @@ def main() -> int:
         "federated_epoch_completions": node.epoch_completions,
         "peer_joins": node.peer_joins,
         "received_updates": node.received_updates,
+        "artifact_audit": artifact_audit,
         "api": evidence,
     }
     atomic_json(runtime / "COMPLETED.json", completion)

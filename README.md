@@ -382,6 +382,73 @@ records. Retain the deadline only as a timeout for missing or slow peers. A
 fixed clock-aligned mode may remain useful, but it should be explicit rather
 than imposing idle time after the completion condition has already passed.
 
+### 16. Federated checkpoint cadence mixes optimizer-step and epoch units
+
+Severity: critical; confirmed by two completed two-site OLMo 2 7B runs.
+
+Bhaskera defines `checkpoint.save_interval` in trainer epochs and evaluates it
+only after `_run_epoch()` returns. Slakshna commit `08f3c56` changed
+`prepare_bhaskera_config()` to populate that field from
+`checkpoint.local_interval`, without documenting or enforcing the unit. A
+caller that reasonably sets `local_interval` to its local optimizer-step
+budget therefore changes an epoch interval instead. With one Bhaskera epoch
+per federated invocation and local step budgets of 117 and 192, no checkpoint
+was eligible to be saved.
+
+The failure is then hidden: when the ML engine cannot find a local checkpoint,
+it substitutes a one-element tensor named `dummy`, encodes and broadcasts it,
+persists it as the next base adapter, and exits successfully. Both federated
+jobs consequently reported ten local completions and exchanged network
+messages while every retained round state contained only the dummy tensor.
+
+Suggested fix: give step- and epoch-based settings unambiguous names and types.
+For the current one-invocation-per-round design, save the local checkpoint at
+the end of every invocation (`save_interval: 1`) and use
+`training.max_steps` exclusively for the local optimizer-step budget. Missing,
+empty, dummy, non-finite, all-zero, or schema-incompatible model updates must
+fail the round before history insertion or broadcast.
+
+Relevant files:
+
+- `Slakshna/ml_engine.py`
+- `Slakshna/node_template.yaml`
+- `Slakshna/Bhaskera/src/bhaskera/trainer/loop.py`
+
+### 17. Partial local training restarts the dataset at every federated round
+
+Severity: critical for epoch-based training claims; confirmed by source audit
+after the two-site run.
+
+Every Rust federated epoch starts a new `ml_engine.py`, which in turn starts a
+new Bhaskera trainer. Immediately before launch, Slakshna deletes all DCP
+`.complete` sentinels explicitly to prevent Bhaskera resume. The next trainer
+therefore restores neither `samples_consumed` nor its dataset cursor and builds
+a fresh iterator at position zero. The iterator also receives the same fixed
+local shuffle seed on every invocation. Model parameters may warm-start from
+the aggregated LoRA, but data position, optimizer, scheduler, and trainer step
+do not continue.
+
+Consequently, configuring each of ten rounds for one fifth of a local data
+epoch guarantees only two epochs' worth of optimizer steps. It does not
+guarantee two complete data passes and can repeatedly optimize the same data
+prefix. The stock example (`max_steps: 5`, implicit `num_epochs: 1`) has the
+same lifecycle; its tests cover delta serialization rather than cross-round
+sample coverage, so short demonstrations do not expose the defect.
+
+Suggested fix: make the local-data contract explicit. Either persist and
+restore a cursor compatible with the post-aggregation warm-start boundary, or
+select a deterministic, manifest-backed shard from the federated round number.
+The latter keeps optimizer state fresh while allowing five disjoint shards to
+form one complete site-local pass. Log the round, shard identity, row count,
+padding, and source hash, and reject an unavailable or repeated shard instead
+of silently restarting from the beginning.
+
+Relevant files:
+
+- `Slakshna/src/main.rs`
+- `Slakshna/ml_engine.py`
+- `Slakshna/Bhaskera/src/bhaskera/trainer/loop.py`
+
 ## Packaging and cluster-integration findings
 
 These findings affected Phase 0/1 portability, but are separated from the

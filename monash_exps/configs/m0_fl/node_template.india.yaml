@@ -61,8 +61,8 @@ checkpoint:
   enabled: true
   save_dir: "dummy"
   save_directory: "dummy"
-  local_interval: 192
-  save_interval: 192
+  local_interval: 1
+  save_interval: 1
   sync_interval: 1
   retention: 1
   keep_last_n: 1

@@ -16,11 +16,18 @@ from pathlib import Path
 import toml
 import yaml
 
+from monash_exps.src.m0_fl.patch_runtime_ml_engine import (
+    patch_bhaskera_checkpointing,
+    patch_file,
+)
+
 SITES = {
     "au": {"view": "australia_nz", "steps": 117, "warmup": 4, "rows": 9337},
     "india": {"view": "south_asia", "steps": 192, "warmup": 6, "rows": 15331},
 }
 G0_SHA256 = "0e87f53ad240ca04a4aaadc93079643e3b7cc1d0b38b7574e8b87e559361918c"
+G0_TENSORS = 128
+G0_PARAMETERS = 8_388_608
 
 
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -34,9 +41,14 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 def copy_stock_sources(source: Path, runtime: Path) -> dict[str, str]:
     inputs = [source / "ml_engine.py"]
     inputs.extend(sorted((source / "federated_communication").rglob("*.py")))
+    bhaskera_source = source / "Bhaskera/src/bhaskera"
+    inputs.extend(sorted(bhaskera_source.rglob("*.py")))
     copied = {}
     for item in inputs:
-        relative = item.relative_to(source)
+        if item.is_relative_to(bhaskera_source):
+            relative = Path("bhaskera") / item.relative_to(bhaskera_source)
+        else:
+            relative = item.relative_to(source)
         destination = runtime / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, destination)
@@ -73,6 +85,55 @@ def install_cache(source: Path, destination: Path) -> list[dict[str, object]]:
     if not any(str(item["path"]).endswith(".parquet") for item in records):
         raise RuntimeError(f"no parquet files found in {source}")
     return records
+
+
+def install_round_shards(
+    source_root: Path, destination_root: Path, expected_rows: int
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    manifest_path = source_root / "round-shards-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("source_rows") != expected_rows:
+        raise RuntimeError(
+            f"round-shard source rows changed: {manifest.get('source_rows')} != {expected_rows}"
+        )
+    if manifest.get("round_count") != 10 or manifest.get("passes") != 2:
+        raise RuntimeError("formal FL requires exactly ten shards forming two passes")
+    if manifest.get("effective_global_batch") != 16:
+        raise RuntimeError("round shards were not built for effective global batch 16")
+
+    installed = []
+    for expected_round, item in enumerate(manifest["rounds"], start=1):
+        if item.get("round") != expected_round:
+            raise RuntimeError(f"non-contiguous round manifest: {item}")
+        source = source_root / item["relative_path"]
+        destination = destination_root / item["relative_path"]
+        records = install_cache(source, destination)
+        parquet = [record for record in records if str(record["path"]).endswith(".parquet")]
+        if len(parquet) != 1 or parquet[0]["sha256"] != item["parquet_sha256"]:
+            raise RuntimeError(f"installed shard differs for round {expected_round}")
+        if item["rows"] != item["max_steps"] * 16:
+            raise RuntimeError(f"invalid row/step contract for round {expected_round}")
+        installed.append(
+            {
+                "round": expected_round,
+                "pass": item["pass"],
+                "path": str(destination.resolve()),
+                "rows": item["rows"],
+                "original_rows": item["original_rows"],
+                "padding_rows": item["padding_rows"],
+                "max_steps": item["max_steps"],
+                "parquet_sha256": item["parquet_sha256"],
+            }
+        )
+
+    for pass_index in (1, 2):
+        pass_items = [item for item in manifest["rounds"] if item["pass"] == pass_index]
+        originals = [index for item in pass_items for index in item["source_indices"]]
+        if len(originals) != expected_rows or set(originals) != set(range(expected_rows)):
+            raise RuntimeError(f"pass {pass_index} does not exactly cover source rows")
+        if len(set(originals)) != expected_rows:
+            raise RuntimeError(f"pass {pass_index} duplicates original rows")
+    return installed, manifest
 
 
 def main() -> int:
@@ -145,17 +206,39 @@ def main() -> int:
     runtime = args.runtime.resolve()
     runtime.mkdir(parents=True, exist_ok=True)
     copied_sources = copy_stock_sources(source, runtime)
+    stock_ml_engine_sha256 = copied_sources["ml_engine.py"]
+    patch_file(runtime / "ml_engine.py")
+    copied_sources["ml_engine.py.runtime_patched"] = sha256_file(runtime / "ml_engine.py")
+    bhaskera_checkpointing = runtime / "bhaskera/trainer/checkpointing.py"
+    stock_checkpointing_sha256 = sha256_file(bhaskera_checkpointing)
+    patch_bhaskera_checkpointing(bhaskera_checkpointing)
+    copied_sources["bhaskera/trainer/checkpointing.py.runtime_patched"] = sha256_file(
+        bhaskera_checkpointing
+    )
     config = yaml.safe_load(template.read_text(encoding="utf-8"))
     config["model"]["name"] = str(model)
     if config["training"]["max_steps"] != profile["steps"]:
         raise RuntimeError("site template step count changed unexpectedly")
+    shard_source = runtime_assets / "data/m0/fl_round_shards" / args.site
+    shard_destination = runtime / "round_shards"
+    round_shards, shard_manifest = install_round_shards(
+        shard_source, shard_destination, profile["rows"]
+    )
+    config["checkpoint"]["local_interval"] = 1
+    config["checkpoint"]["save_interval"] = 1
+    config["federated_data"] = {
+        "round_shards_enabled": True,
+        "effective_global_batch": 16,
+        "expected_lora_tensors": G0_TENSORS,
+        "expected_lora_parameters": G0_PARAMETERS,
+        "round_shards_manifest_sha256": sha256_file(
+            shard_source / "round-shards-manifest.json"
+        ),
+        "round_shards": round_shards,
+    }
     (runtime / "node_template.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False), encoding="utf-8"
     )
-
-    cache_root = runtime / "data" / f"data_{args.node_id}" / "tokenized_cache"
-    cache_destination = cache_root / cache_dirs[0].name
-    cache_records = install_cache(cache_dirs[0], cache_destination)
     model_root = runtime / "ml_models"
     model_root.mkdir(parents=True, exist_ok=True)
     base_lora = model_root / f"{args.node_id}_base_lora.pth"
@@ -229,13 +312,25 @@ def main() -> int:
         "seed_peer": seed,
         "runtime": str(runtime),
         "rows": profile["rows"],
-        "steps_per_round": profile["steps"],
+        "steps_per_round": [item["max_steps"] for item in round_shards],
         "rounds": 10,
-        "effective_epochs": profile["steps"] * 10 * 16 / profile["rows"],
+        "complete_source_passes": 2,
+        "scheduled_rows": sum(item["rows"] for item in round_shards),
+        "padding_rows": sum(item["padding_rows"] for item in round_shards),
         "epoch_duration_secs": args.epoch_duration,
         "sync_deadline_secs": args.sync_deadline,
         "stock_source_hashes": copied_sources,
-        "cache": cache_records,
+        "stock_ml_engine_sha256": stock_ml_engine_sha256,
+        "runtime_ml_engine_sha256": sha256_file(runtime / "ml_engine.py"),
+        "stock_bhaskera_checkpointing_sha256": stock_checkpointing_sha256,
+        "runtime_bhaskera_checkpointing_sha256": sha256_file(
+            bhaskera_checkpointing
+        ),
+        "round_shards_manifest_sha256": sha256_file(
+            shard_source / "round-shards-manifest.json"
+        ),
+        "round_shards": round_shards,
+        "round_shard_padding_policy": shard_manifest["padding_policy"],
         "base_lora_sha256": sha256_file(base_lora),
         "node_template_sha256": sha256_file(runtime / "node_template.yaml"),
         "node_config_sha256": sha256_file(node_path),
