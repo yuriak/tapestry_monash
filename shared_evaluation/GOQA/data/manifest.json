@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-08-24T17:33:37+10:00",
+  "source": {
+    "repository": "Anthropic/llm_global_opinions",
+    "license": "CC-BY-NC-SA-4.0",
+    "csv_sha256": "789e99ebb0eb1d0768de565ec80fab7a25bfef5baa1cccebdda75777eea86051",
+    "rows": 2556
+  },
+  "dataset_file": "goqa_au_nz_india.jsonl",
+  "dataset_sha256": "c910f1d10f444b8dc3ba3026dd1b8e35ad197278d4ec4f04ee82abd4bd2dad21",
+  "filter": "Keep questions with at least one non-zero Australia, New Zealand, or India human distribution; remove all non-target distributions.",
+  "question_count": 1106,
+  "source_question_counts": {
+    "GAS": 896,
+    "WVS": 210
+  },
+  "target_pair_counts": {
+    "Australia": 626,
+    "New Zealand": 273,
+    "India (Current national sample)": 470,
+    "India (Non-national sample)": 340,
+    "India (Old national sample)": 122
+  },
+  "excluded_zero_distributions": {
+    "Australia": 1,
+    "New Zealand": 1,
+    "India (Current national sample)": 0,
+    "India (Non-national sample)": 0,
+    "India (Old national sample)": 0
+  },
+  "australia_nz_unique_questions": 626,
+  "india_unique_questions": 766,
+  "cross_region_question_overlap": 286,
+  "target_groups": [
+    "Australia",
+    "New Zealand",
+    "India (Current national sample)",
+    "India (Non-national sample)",
+    "India (Old national sample)"
+  ]
+}
