@@ -8,7 +8,7 @@ case "${mode}" in
     *) echo "Usage: bash m0_fl_submit_m3.sh --test-only|--submit" >&2; exit 2 ;;
 esac
 
-workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 output_root="$(readlink -f "${workspace}/Slakshna/m0_runtime")"
 playit_config="${M0_FL_PLAYIT_CONFIG:-${workspace}/m0_fl_m3_playit.toml}"
 job_script="${workspace}/monash_exps/scripts/m0_fl/m3_formal_job.sbatch"

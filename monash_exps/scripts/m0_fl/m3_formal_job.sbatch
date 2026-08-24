@@ -7,9 +7,10 @@
 #SBATCH --gres=gpu:A100:2
 #SBATCH --constraint=A100-80G
 #SBATCH --time=06:00:00
-#SBATCH --output=m0_runtime/slurm/%x-%j.out
-#SBATCH --error=m0_runtime/slurm/%x-%j.err
-#SBATCH --mail-type=FAIL
+#SBATCH --output=Slakshna/m0_runtime/slurm/%x-%j.out
+#SBATCH --error=Slakshna/m0_runtime/slurm/%x-%j.err
+#SBATCH --mail-user=ye.bai2@student.unimelb.edu.au
+#SBATCH --mail-type=FAIL,BEGIN,END
 
 set -euo pipefail
 
@@ -43,6 +44,7 @@ export M0_FL_FEDERATION_ID="m0-local-fl-${run_id}"
 echo "M0 local FL run: ${run_id}"
 echo "Nodes: ${SLURM_JOB_NODELIST}"
 echo "Output: ${run_root}"
+echo "Network policy: India-only Playit ingress; AU outbound dialer; private peers rejected"
 
 srun \
     --nodes=2 \

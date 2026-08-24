@@ -147,7 +147,7 @@ def wait_for_file(path: Path, timeout: int = 300) -> dict[str, Any]:
     raise TimeoutError(f"timed out waiting for shared state: {path}")
 
 
-def load_playit_site(workspace: Path, site: str, local_port: int) -> dict[str, Any]:
+def load_playit_site(workspace: Path, site: str) -> dict[str, Any]:
     config_path = Path(os.environ["M0_FL_PLAYIT_CONFIG"])
     if not config_path.is_absolute():
         config_path = workspace / config_path
@@ -164,10 +164,9 @@ def load_playit_site(workspace: Path, site: str, local_port: int) -> dict[str, A
         secret_path = workspace / secret_path
     if not host or not 1024 <= public_port <= 65535:
         raise RuntimeError(f"invalid Playit public endpoint for {site}")
-    if configured_local_port != local_port:
+    if not 1024 <= configured_local_port <= 65535:
         raise RuntimeError(
-            f"Playit tunnel for {site} must target 127.0.0.1:{local_port}; "
-            f"config declares {configured_local_port}"
+            f"invalid Playit local port for {site}: {configured_local_port}"
         )
     if not secret_path.is_file() or secret_path.stat().st_size == 0:
         raise RuntimeError(f"Playit agent secret is missing for {site}: {secret_path}")
@@ -193,7 +192,7 @@ def load_playit_site(workspace: Path, site: str, local_port: int) -> dict[str, A
         "public_host": host,
         "public_port": public_port,
         "public_ipv4": public_addresses[0],
-        "local_port": local_port,
+        "local_port": configured_local_port,
         "secret_path": str(secret_path.resolve()),
     }
 
@@ -515,10 +514,11 @@ def main() -> int:
     experiment = workspace / "monash_exps"
     python = experiment / ".runtime/venvs/primary/bin/python"
     rust_binary = experiment / ".runtime/cargo-target/slakshna/release/iiitd"
+    ingress = load_playit_site(workspace, PLAYIT_INGRESS_SITE)
     runtime = run_root / site
     runtime.mkdir(parents=True, exist_ok=False)
     ports = {
-        "p2p": 38080 if site == PLAYIT_INGRESS_SITE else 39080,
+        "p2p": ingress["local_port"] if site == PLAYIT_INGRESS_SITE else 39080,
         "api": 39401,
         "ws": 39402,
     }
@@ -537,7 +537,6 @@ def main() -> int:
     inventory = gpu_and_cpu_inventory()
     print(f"[{site}] allocation: {json.dumps(inventory, sort_keys=True)}", flush=True)
 
-    ingress = load_playit_site(workspace, PLAYIT_INGRESS_SITE, 38080)
     playit: PlayitProcess | None = None
     if site == PLAYIT_INGRESS_SITE:
         playit = PlayitProcess(workspace, runtime, site, ingress)

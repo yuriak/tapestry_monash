@@ -243,6 +243,7 @@ reply.txt
 /m0_*rsync*.sh
 /m0_fl_spartan_playit.toml
 /m0_fl_m3_playit.toml
+/m0_fl_m3_playit.sh
 /m0_pull_*.sh
 /smux-*.out
 /smux-*.err
