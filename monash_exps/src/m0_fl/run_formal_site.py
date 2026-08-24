@@ -25,8 +25,13 @@ import torch
 
 IDENTITY_RE = re.compile(r"Node Identity:\s+(slakshna1[0-9a-z]+)")
 ENDPOINT_RE = re.compile(r"^[0-9a-f]{64}$")
-FAILURE_MARKERS = ("Python ML Engine failed", "panicked at", "Traceback (most recent call last)")
+FAILURE_MARKERS = (
+    "Python ML Engine failed",
+    "panicked at",
+    "Traceback (most recent call last)",
+)
 SITES = ("au", "india")
+PLAYIT_INGRESS_SITE = "india"
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -37,7 +42,9 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def api_get(port: int, endpoint: str = "/status") -> dict[str, Any]:
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}{endpoint}", timeout=3) as response:
+    with urllib.request.urlopen(
+        f"http://127.0.0.1:{port}{endpoint}", timeout=3
+    ) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -92,9 +99,13 @@ class NodeProcess:
                     if match:
                         self.node_id = match.group(1)
                     self.local_completions += line.count("Local Training Complete!")
-                    self.epoch_completions += line.count("Most-trusted cohort this epoch")
+                    self.epoch_completions += line.count(
+                        "Most-trusted cohort this epoch"
+                    )
                     self.peer_joins += line.count("Peer joined gossip mesh")
-                    self.received_updates += line.count("Gossiped model update received")
+                    self.received_updates += line.count(
+                        "Gossiped model update received"
+                    )
                     for marker in FAILURE_MARKERS:
                         if marker in line:
                             self.failures.append(line.strip())
@@ -188,7 +199,9 @@ def load_playit_site(workspace: Path, site: str, local_port: int) -> dict[str, A
 
 
 class PlayitProcess:
-    def __init__(self, workspace: Path, runtime: Path, site: str, settings: dict[str, Any]):
+    def __init__(
+        self, workspace: Path, runtime: Path, site: str, settings: dict[str, Any]
+    ):
         runtime_tools = workspace / "monash_exps/.runtime/tools/playit/bin"
         self.daemon = runtime_tools / "playitd"
         self.cli = runtime_tools / "playit"
@@ -204,7 +217,9 @@ class PlayitProcess:
 
     def start(self) -> None:
         if not self.daemon.is_file() or not self.cli.is_file():
-            raise RuntimeError("pinned Playit binaries are missing from monash_exps/.runtime/tools")
+            raise RuntimeError(
+                "pinned Playit binaries are missing from monash_exps/.runtime/tools"
+            )
         self.socket_path.unlink(missing_ok=True)
         self.handle = self.stdio_path.open("wb", buffering=0)
         self.process = subprocess.Popen(
@@ -223,11 +238,18 @@ class PlayitProcess:
         )
         for _ in range(120):
             if self.process.poll() is not None:
-                raise RuntimeError(f"Playit agent for {self.site} exited during startup")
+                raise RuntimeError(
+                    f"Playit agent for {self.site} exited during startup"
+                )
             if self.socket_path.is_socket():
                 try:
                     status = subprocess.run(
-                        [str(self.cli), "--socket-path", str(self.socket_path), "status"],
+                        [
+                            str(self.cli),
+                            "--socket-path",
+                            str(self.socket_path),
+                            "status",
+                        ],
                         check=True,
                         capture_output=True,
                         text=True,
@@ -236,7 +258,9 @@ class PlayitProcess:
                     (self.log_path.parent / "playit-status.txt").write_text(
                         status.stdout + status.stderr, encoding="utf-8"
                     )
-                    log_text = self.log_path.read_text(encoding="utf-8", errors="replace")
+                    log_text = self.log_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
                     counts = [
                         int(value)
                         for value in re.findall(
@@ -249,7 +273,9 @@ class PlayitProcess:
                 except (subprocess.SubprocessError, OSError):
                     pass
             time.sleep(1)
-        raise TimeoutError(f"Playit agent for {self.site} did not load its assigned tunnel")
+        raise TimeoutError(
+            f"Playit agent for {self.site} did not load its assigned tunnel"
+        )
 
     def stop(self) -> None:
         if self.process is not None and self.process.poll() is None:
@@ -269,55 +295,114 @@ class PlayitProcess:
         self.socket_path.unlink(missing_ok=True)
 
 
-def probe_own_playit_tunnel(
-    python: Path, experiment: Path, runtime: Path, settings: dict[str, Any]
+def probe_single_playit_ingress(
+    *,
+    python: Path,
+    experiment: Path,
+    runtime: Path,
+    run_root: Path,
+    site: str,
+    settings: dict[str, Any],
 ) -> dict[str, Any]:
-    token = f"m0-fl-{secrets.token_hex(12)}"
     script = experiment / "src/phase8/udp_probe.py"
-    server_json = runtime / "playit-probe-server.json"
-    client_json = runtime / "playit-probe-client.json"
-    with (runtime / "playit-probe-server.log").open("w", encoding="utf-8") as log:
-        server = subprocess.Popen(
-            [
-                str(python), str(script), "server", "--bind", "127.0.0.1",
-                "--port", str(settings["local_port"]), "--token", token,
-                "--wait", "90", "--output", str(server_json),
-            ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        try:
-            time.sleep(1)
-            subprocess.run(
+    coordination = run_root / "PLAYIT_PROBE.json"
+    ingress_pass = run_root / "PLAYIT_INGRESS_PASS.json"
+    if site == PLAYIT_INGRESS_SITE:
+        token = f"m0-fl-{secrets.token_hex(12)}"
+        server_json = runtime / "playit-probe-server.json"
+        with (runtime / "playit-probe-server.log").open("w", encoding="utf-8") as log:
+            server = subprocess.Popen(
                 [
-                    str(python), str(script), "client",
-                    "--host", settings["public_host"],
-                    "--port", str(settings["public_port"]),
-                    "--token", token, "--attempts", "20", "--timeout", "2",
-                    "--interval", "1", "--output", str(client_json),
+                    str(python),
+                    str(script),
+                    "server",
+                    "--bind",
+                    "127.0.0.1",
+                    "--port",
+                    str(settings["local_port"]),
+                    "--token",
+                    token,
+                    "--wait",
+                    "120",
+                    "--output",
+                    str(server_json),
                 ],
-                check=True,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
-            server.wait(timeout=15)
-        finally:
-            if server.poll() is None:
-                server.terminate()
-                try:
-                    server.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    server.kill()
-                    server.wait(timeout=5)
-    return {
-        "server": json.loads(server_json.read_text(encoding="utf-8")),
-        "client": json.loads(client_json.read_text(encoding="utf-8")),
-    }
+            time.sleep(1)
+            if server.poll() is not None:
+                raise RuntimeError(
+                    "India Playit probe server exited before AU dialled it"
+                )
+            atomic_json(
+                coordination,
+                {
+                    "token": token,
+                    "public_host": settings["public_host"],
+                    "public_port": settings["public_port"],
+                },
+            )
+            try:
+                server.wait(timeout=120)
+            finally:
+                if server.poll() is None:
+                    server.terminate()
+                    try:
+                        server.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        server.kill()
+                        server.wait(timeout=5)
+        result = json.loads(server_json.read_text(encoding="utf-8"))
+        if result.get("status") != "PASS":
+            raise RuntimeError("India Playit ingress probe did not pass")
+        atomic_json(ingress_pass, result)
+        return result
+
+    probe = wait_for_file(coordination, timeout=180)
+    if probe["public_host"] != settings["public_host"] or int(
+        probe["public_port"]
+    ) != int(settings["public_port"]):
+        raise RuntimeError("Playit probe coordination differs from configured ingress")
+    client_json = runtime / "playit-probe-client.json"
+    subprocess.run(
+        [
+            str(python),
+            str(script),
+            "client",
+            "--host",
+            settings["public_host"],
+            "--port",
+            str(settings["public_port"]),
+            "--token",
+            probe["token"],
+            "--attempts",
+            "20",
+            "--timeout",
+            "2",
+            "--interval",
+            "1",
+            "--output",
+            str(client_json),
+        ],
+        check=True,
+    )
+    result = json.loads(client_json.read_text(encoding="utf-8"))
+    if result.get("status") != "PASS":
+        raise RuntimeError("AU could not reach the India Playit ingress")
+    wait_for_file(ingress_pass, timeout=30)
+    return result
 
 
 def bootstrap_config(runtime: Path, federation_id: str, ports: dict[str, int]) -> Path:
     config = {
         "federation": {"id": federation_id, "name": "M0 Local FL bootstrap"},
-        "training": {"epoch_duration_secs": 780, "sync_deadline_secs": 720, "expected_peers": 2},
+        "training": {
+            "epoch_duration_secs": 780,
+            "sync_deadline_secs": 720,
+            "expected_peers": 2,
+        },
         "compression": {
             "enabled": True,
             "sparsity": 0.1,
@@ -381,12 +466,16 @@ def bootstrap_identity(
 
 def gpu_and_cpu_inventory() -> dict[str, Any]:
     if torch.cuda.device_count() != 2:
-        raise RuntimeError(f"expected two visible GPUs, found {torch.cuda.device_count()}")
+        raise RuntimeError(
+            f"expected two visible GPUs, found {torch.cuda.device_count()}"
+        )
     gpus = []
     for index in range(2):
         props = torch.cuda.get_device_properties(index)
         if "A100" not in props.name or props.total_memory < 75_000 * 1024 * 1024:
-            raise RuntimeError(f"GPU {index} is not an 80 GB A100: {props.name}, {props.total_memory}")
+            raise RuntimeError(
+                f"GPU {index} is not an 80 GB A100: {props.name}, {props.total_memory}"
+            )
         gpus.append({"index": index, "name": props.name, "bytes": props.total_memory})
     return {
         "hostname": socket.gethostname(),
@@ -428,7 +517,11 @@ def main() -> int:
     rust_binary = experiment / ".runtime/cargo-target/slakshna/release/iiitd"
     runtime = run_root / site
     runtime.mkdir(parents=True, exist_ok=False)
-    ports = {"p2p": 39080, "api": 39401, "ws": 39402}
+    ports = {
+        "p2p": 38080 if site == PLAYIT_INGRESS_SITE else 39080,
+        "api": 39401,
+        "ws": 39402,
+    }
 
     os.environ.update(
         {
@@ -444,29 +537,39 @@ def main() -> int:
     inventory = gpu_and_cpu_inventory()
     print(f"[{site}] allocation: {json.dumps(inventory, sort_keys=True)}", flush=True)
 
-    playit_sites = {
-        name: load_playit_site(workspace, name, ports["p2p"]) for name in SITES
-    }
-    playit = PlayitProcess(workspace, runtime, site, playit_sites[site])
-    playit.start()
-    atexit.register(playit.stop)
-    playit_probe = probe_own_playit_tunnel(
-        python, experiment, runtime, playit_sites[site]
+    ingress = load_playit_site(workspace, PLAYIT_INGRESS_SITE, 38080)
+    playit: PlayitProcess | None = None
+    if site == PLAYIT_INGRESS_SITE:
+        playit = PlayitProcess(workspace, runtime, site, ingress)
+        playit.start()
+        atexit.register(playit.stop)
+    else:
+        print(f"[{site}] outbound-only role; no Playit agent started", flush=True)
+    playit_probe = probe_single_playit_ingress(
+        python=python,
+        experiment=experiment,
+        runtime=runtime,
+        run_root=run_root,
+        site=site,
+        settings=ingress,
     )
     atomic_json(
         runtime / "playit-preflight.json",
         {
             "site": site,
-            "public_host": playit_sites[site]["public_host"],
-            "public_ipv4": playit_sites[site]["public_ipv4"],
-            "public_port": playit_sites[site]["public_port"],
-            "local_port": playit_sites[site]["local_port"],
+            "role": (
+                "public-ingress" if site == PLAYIT_INGRESS_SITE else "outbound-dialer"
+            ),
+            "public_host": ingress["public_host"],
+            "public_ipv4": ingress["public_ipv4"],
+            "public_port": ingress["public_port"],
+            "local_port": ingress["local_port"],
             "probe": playit_probe,
         },
     )
     print(
-        f"[{site}] Playit UDP preflight passed via "
-        f"{playit_sites[site]['public_host']}:{playit_sites[site]['public_port']}",
+        f"[{site}] cross-node Playit UDP preflight passed via "
+        f"{ingress['public_host']}:{ingress['public_port']}",
         flush=True,
     )
 
@@ -475,46 +578,58 @@ def main() -> int:
         "site": site,
         "node_id": node_id,
         "endpoint_id": endpoint,
-        "playit_public_ipv4": playit_sites[site]["public_ipv4"],
-        "playit_public_port": playit_sites[site]["public_port"],
+        "network_role": "public-ingress"
+        if site == PLAYIT_INGRESS_SITE
+        else "outbound-dialer",
         **inventory,
     }
     atomic_json(runtime / "identity.json", identity)
     peer = wait_for_file(run_root / peer_site / "identity.json")
     print(f"[{site}] identity exchange complete with {peer_site}", flush=True)
 
+    prepare_command = [
+        str(python),
+        "-m",
+        "monash_exps.src.m0_fl.prepare_site_runtime",
+        "--site",
+        site,
+        "--runtime",
+        str(runtime),
+        "--node-id",
+        node_id,
+        "--allowed-peer-endpoint",
+        peer["endpoint_id"],
+        "--p2p-port",
+        str(ports["p2p"]),
+        "--api-port",
+        str(ports["api"]),
+        "--ws-port",
+        str(ports["ws"]),
+        "--federation-id",
+        federation_id,
+    ]
+    if site == "au":
+        prepare_command.extend(
+            [
+                "--seed-peer-endpoint",
+                peer["endpoint_id"],
+                "--seed-peer-public-ip",
+                ingress["public_ipv4"],
+                "--seed-peer-public-port",
+                str(ingress["public_port"]),
+            ]
+        )
     subprocess.run(
-        [
-            str(python),
-            "-m",
-            "monash_exps.src.m0_fl.prepare_site_runtime",
-            "--site",
-            site,
-            "--runtime",
-            str(runtime),
-            "--node-id",
-            node_id,
-            "--peer-endpoint",
-            peer["endpoint_id"],
-            "--peer-public-ip",
-            playit_sites[peer_site]["public_ipv4"],
-            "--p2p-port",
-            str(ports["p2p"]),
-            "--api-port",
-            str(ports["api"]),
-            "--ws-port",
-            str(ports["ws"]),
-            "--peer-p2p-port",
-            str(playit_sites[peer_site]["public_port"]),
-            "--federation-id",
-            federation_id,
-        ],
+        prepare_command,
         cwd=workspace,
         check=True,
         stdout=(runtime / "preparation.log").open("w", encoding="utf-8"),
         stderr=subprocess.STDOUT,
     )
-    atomic_json(runtime / "READY.json", {"site": site, "ready_at": datetime.now().astimezone().isoformat()})
+    atomic_json(
+        runtime / "READY.json",
+        {"site": site, "ready_at": datetime.now().astimezone().isoformat()},
+    )
     wait_for_file(run_root / peer_site / "READY.json")
 
     launch_path = run_root / "LAUNCH.json"
@@ -544,7 +659,9 @@ def main() -> int:
             if node.failures:
                 raise RuntimeError("; ".join(node.failures[-3:]))
             if node.process.poll() is not None:
-                raise RuntimeError(f"Slakshna exited early with status {node.process.returncode}")
+                raise RuntimeError(
+                    f"Slakshna exited early with status {node.process.returncode}"
+                )
             if node.epoch_completions >= 10:
                 break
             time.sleep(1)
@@ -595,7 +712,8 @@ def main() -> int:
             },
         )
     print(f"[{site}] M0 local FL completed", flush=True)
-    playit.stop()
+    if playit is not None:
+        playit.stop()
     return 0
 
 

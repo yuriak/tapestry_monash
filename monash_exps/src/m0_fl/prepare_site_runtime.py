@@ -64,7 +64,11 @@ def install_cache(source: Path, destination: Path) -> list[dict[str, object]]:
                     raise
                 shutil.copy2(item, target)
         records.append(
-            {"path": str(target), "bytes": target.stat().st_size, "sha256": sha256_file(target)}
+            {
+                "path": str(target),
+                "bytes": target.stat().st_size,
+                "sha256": sha256_file(target),
+            }
         )
     if not any(str(item["path"]).endswith(".parquet") for item in records):
         raise RuntimeError(f"no parquet files found in {source}")
@@ -76,12 +80,13 @@ def main() -> int:
     parser.add_argument("--site", required=True, choices=sorted(SITES))
     parser.add_argument("--runtime", required=True, type=Path)
     parser.add_argument("--node-id", required=True)
-    parser.add_argument("--peer-endpoint", required=True)
-    parser.add_argument("--peer-public-ip", required=True)
+    parser.add_argument("--allowed-peer-endpoint", required=True)
+    parser.add_argument("--seed-peer-endpoint")
+    parser.add_argument("--seed-peer-public-ip")
+    parser.add_argument("--seed-peer-public-port", type=int)
     parser.add_argument("--p2p-port", required=True, type=int)
     parser.add_argument("--api-port", required=True, type=int)
     parser.add_argument("--ws-port", required=True, type=int)
-    parser.add_argument("--peer-p2p-port", required=True, type=int)
     parser.add_argument("--federation-id", required=True)
     parser.add_argument("--epoch-duration", type=int, default=780)
     parser.add_argument("--sync-deadline", type=int, default=720)
@@ -89,16 +94,34 @@ def main() -> int:
 
     if args.sync_deadline >= args.epoch_duration:
         parser.error("sync deadline must be below the epoch duration")
-    if len(args.peer_endpoint) != 64:
-        parser.error("peer endpoint must be a 64-character Iroh EndpointId")
-    try:
-        peer_ip = ipaddress.ip_address(args.peer_public_ip)
-    except ValueError as error:
-        parser.error(f"peer public IP is invalid: {error}")
-    if peer_ip.version != 4 or not peer_ip.is_global:
+    if len(args.allowed_peer_endpoint) != 64:
+        parser.error("allowed peer must be a 64-character Iroh EndpointId")
+    seed_values = (
+        args.seed_peer_endpoint,
+        args.seed_peer_public_ip,
+        args.seed_peer_public_port,
+    )
+    if any(value is not None for value in seed_values) and not all(
+        value is not None for value in seed_values
+    ):
         parser.error(
-            f"peer address must be a global IPv4 routed through Playit, got {peer_ip}"
+            "seed peer endpoint, public IP, and public port must be set together"
         )
+    seed = None
+    if args.seed_peer_endpoint is not None:
+        if len(args.seed_peer_endpoint) != 64:
+            parser.error("seed peer must be a 64-character Iroh EndpointId")
+        try:
+            peer_ip = ipaddress.ip_address(args.seed_peer_public_ip)
+        except ValueError as error:
+            parser.error(f"seed peer public IP is invalid: {error}")
+        if peer_ip.version != 4 or not peer_ip.is_global:
+            parser.error(
+                f"seed address must be a global IPv4 routed through Playit, got {peer_ip}"
+            )
+        if not 1024 <= args.seed_peer_public_port <= 65535:
+            parser.error("seed peer public port must be between 1024 and 65535")
+        seed = f"{args.seed_peer_endpoint}@{peer_ip}:{args.seed_peer_public_port}"
 
     workspace = Path(__file__).resolve().parents[3]
     experiment = workspace / "monash_exps"
@@ -108,10 +131,14 @@ def main() -> int:
     template = experiment / "configs/m0_fl" / f"node_template.{args.site}.yaml"
     model = (runtime_assets / "models/m0/OLMo-2-1124-7B-Instruct").resolve()
     g0 = runtime_assets / "artifacts/m0/g0/olmo2-7b-r16-qv-seed20260820.pth"
-    cache_parent = runtime_assets / "data/m0/tokenized/olmo2-7b-chatml-seq1024" / profile["view"]
+    cache_parent = (
+        runtime_assets / "data/m0/tokenized/olmo2-7b-chatml-seq1024" / profile["view"]
+    )
     cache_dirs = sorted(path for path in cache_parent.iterdir() if path.is_dir())
     if len(cache_dirs) != 1:
-        raise RuntimeError(f"expected one cache directory for {args.site}: {cache_dirs}")
+        raise RuntimeError(
+            f"expected one cache directory for {args.site}: {cache_dirs}"
+        )
     if sha256_file(g0) != G0_SHA256:
         raise RuntimeError(f"frozen G0 checksum mismatch: {g0}")
 
@@ -134,7 +161,9 @@ def main() -> int:
     base_lora = model_root / f"{args.node_id}_base_lora.pth"
     if base_lora.exists():
         if sha256_file(base_lora) != G0_SHA256:
-            raise RuntimeError(f"base LoRA already changed; refusing to reset training state: {base_lora}")
+            raise RuntimeError(
+                f"base LoRA already changed; refusing to reset training state: {base_lora}"
+            )
     else:
         shutil.copy2(g0, base_lora)
 
@@ -164,8 +193,8 @@ def main() -> int:
             "p2p_port": args.p2p_port,
             "ws_port": args.ws_port,
             "api_port": args.api_port,
-            "peers": [f"{args.peer_endpoint}@{peer_ip}:{args.peer_p2p_port}"],
-            "allowed_peers": [args.peer_endpoint],
+            "peers": [seed] if seed else [],
+            "allowed_peers": [args.allowed_peer_endpoint],
         },
         "discovery": {"mdns": False, "dht": False, "dns": False, "relay": False},
         "logging": {"level": "info"},
@@ -187,15 +216,17 @@ def main() -> int:
     )
     expected = (2, 4, profile["steps"], profile["warmup"], "ddp", 16, 1024)
     if observed != expected:
-        raise RuntimeError(f"resolved Bhaskera config mismatch: {observed} != {expected}")
+        raise RuntimeError(
+            f"resolved Bhaskera config mismatch: {observed} != {expected}"
+        )
 
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now().astimezone().isoformat(),
         "site": args.site,
         "node_id": args.node_id,
-        "peer_endpoint": args.peer_endpoint,
-        "peer_public_address": f"{peer_ip}:{args.peer_p2p_port}",
+        "allowed_peer_endpoint": args.allowed_peer_endpoint,
+        "seed_peer": seed,
         "runtime": str(runtime),
         "rows": profile["rows"],
         "steps_per_round": profile["steps"],
