@@ -32,6 +32,7 @@ FAILURE_MARKERS = (
 )
 SITES = ("au", "india")
 PLAYIT_INGRESS_SITE = "india"
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -260,6 +261,7 @@ class PlayitProcess:
                     log_text = self.log_path.read_text(
                         encoding="utf-8", errors="replace"
                     )
+                    log_text = ANSI_CSI_RE.sub("", log_text)
                     counts = [
                         int(value)
                         for value in re.findall(
