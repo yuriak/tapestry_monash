@@ -61,11 +61,89 @@ def wait_api(port: int, timeout: int = 60) -> dict[str, Any]:
     raise TimeoutError(f"API on port {port} did not become ready: {last_error}")
 
 
+def resolve_rust_environment(binary: Path) -> tuple[dict[str, str], dict[str, Any]]:
+    """Select an LD_LIBRARY_PATH that can actually load the Rust binary."""
+
+    def check(environment: dict[str, str]) -> tuple[bool, str]:
+        completed = subprocess.run(
+            ["ldd", str(binary)],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        output = completed.stdout + completed.stderr
+        healthy = completed.returncode == 0 and "not found" not in output
+        return healthy, output
+
+    current = os.environ.copy()
+    healthy, current_ldd = check(current)
+    if healthy:
+        return current, {
+            "selection": "inherited",
+            "ld_library_path": current.get("LD_LIBRARY_PATH", ""),
+            "ldd": current_ldd,
+        }
+
+    candidates: list[tuple[str, str]] = []
+    if "M0_RUST_LD_LIBRARY_PATH" in current:
+        candidates.append(("M0_RUST_LD_LIBRARY_PATH", current["M0_RUST_LD_LIBRARY_PATH"]))
+
+    retained = []
+    removed = []
+    for raw_entry in current.get("LD_LIBRARY_PATH", "").split(":"):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if (Path(entry) / "libstdc++.so.6").exists():
+            removed.append(entry)
+        else:
+            retained.append(entry)
+    candidates.append(("filtered-incompatible-libstdc++", ":".join(retained)))
+
+    attempted: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for selection, library_path in candidates:
+        if library_path in seen_paths:
+            continue
+        seen_paths.add(library_path)
+        candidate = current.copy()
+        candidate["LD_LIBRARY_PATH"] = library_path
+        healthy, candidate_ldd = check(candidate)
+        attempted.append(
+            {
+                "selection": selection,
+                "ld_library_path": library_path,
+                "ldd": candidate_ldd,
+            }
+        )
+        if healthy:
+            return candidate, {
+                "selection": selection,
+                "ld_library_path": library_path,
+                "removed_library_paths": removed,
+                "inherited_ldd_failure": current_ldd,
+                "ldd": candidate_ldd,
+            }
+
+    raise RuntimeError(
+        "Rust binary has unresolved runtime libraries under inherited and "
+        f"fallback environments: {json.dumps(attempted, sort_keys=True)}"
+    )
+
+
 class NodeProcess:
-    def __init__(self, command: list[str], cwd: Path, log_path: Path):
+    def __init__(
+        self,
+        command: list[str],
+        cwd: Path,
+        log_path: Path,
+        environment: dict[str, str],
+    ):
         self.command = command
         self.cwd = cwd
         self.log_path = log_path
+        self.environment = environment
         self.process: subprocess.Popen[str] | None = None
         self.thread: threading.Thread | None = None
         self.node_id: str | None = None
@@ -81,7 +159,7 @@ class NodeProcess:
         self.process = subprocess.Popen(
             self.command,
             cwd=self.cwd,
-            env=os.environ.copy(),
+            env=self.environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -439,12 +517,14 @@ def bootstrap_identity(
     federation_id: str,
     rust_binary: Path,
     ports: dict[str, int],
+    rust_environment: dict[str, str],
 ) -> tuple[str, str]:
     config = bootstrap_config(runtime, federation_id, ports)
     node = NodeProcess(
         [str(rust_binary), "--config", str(config)],
         runtime,
         runtime / "identity-bootstrap.log",
+        rust_environment,
     )
     node.start(echo=False)
     try:
@@ -536,6 +616,12 @@ def main() -> int:
             "PATH": f"{python.parent}:{os.environ['PATH']}",
         }
     )
+    rust_environment, rust_runtime = resolve_rust_environment(rust_binary)
+    atomic_json(runtime / "rust-runtime.json", rust_runtime)
+    print(
+        f"[{site}] Rust runtime: {rust_runtime['selection']}",
+        flush=True,
+    )
     inventory = gpu_and_cpu_inventory()
     print(f"[{site}] allocation: {json.dumps(inventory, sort_keys=True)}", flush=True)
 
@@ -574,7 +660,13 @@ def main() -> int:
         flush=True,
     )
 
-    node_id, endpoint = bootstrap_identity(runtime, federation_id, rust_binary, ports)
+    node_id, endpoint = bootstrap_identity(
+        runtime,
+        federation_id,
+        rust_binary,
+        ports,
+        rust_environment,
+    )
     identity = {
         "site": site,
         "node_id": node_id,
@@ -648,6 +740,7 @@ def main() -> int:
         [str(rust_binary), "--config", str(runtime / "node.toml")],
         runtime,
         runtime / "rust-node.log",
+        rust_environment,
     )
     node.start(echo=True)
     try:
