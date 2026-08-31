@@ -19,9 +19,12 @@ the available human distributions.
 | `data/goqa_au_nz_india.jsonl` | Filtered 1,106-question evaluation dataset |
 | `data/manifest.json` | Source hash, filtering rule, target counts, and output hash |
 | `run_inference.py` | Five-prompt vLLM inference with optional unmerged LoRA |
+| `run_trajectory.py` | Persistent-engine inference over a base model and multiple LoRAs |
 | `score_predictions.py` | Dependency-free Jensen–Shannon scoring and reports |
 | `validate_package.py` | Dataset, manifest, and prediction integrity checks |
 | `run_evaluation.sh` | One-command validation, inference, and scoring workflow |
+| `run_trajectory.sh` | One-command multi-adapter inference and scoring workflow |
+| `stage_model.sh` | Optional staging of model files onto node-local storage |
 | `build_dataset.py` | Reproducible subset builder; not needed for normal evaluation |
 
 See `DATASET_NOTICE.md` for the upstream dataset license and citation.
@@ -78,6 +81,36 @@ are already present in `predictions.jsonl`. It refuses to resume if the model,
 adapter, dataset, prompt, or inference configuration recorded in the prediction
 manifest has changed.
 
+## Multi-adapter trajectory evaluation
+
+When several LoRA checkpoints share one base model, use the trajectory entry
+point. It loads the base model once, switches unmerged adapters inside the same
+vLLM engine, and scores every completed prediction file after inference:
+
+```bash
+GOQA_PYTHON=/path/to/python \
+bash run_trajectory.sh /path/to/base-model /path/to/output \
+  base \
+  round_01=/path/to/round-1-adapter \
+  round_02=/path/to/round-2-adapter
+```
+
+On clusters with slow shared storage, the model can be copied once to local
+NVMe before vLLM starts:
+
+```bash
+GOQA_PYTHON=/path/to/python \
+GOQA_STAGE_MODEL_DIR=/tmp/goqa-base-model \
+bash run_trajectory.sh /path/to/base-model /path/to/output \
+  base round_01=/path/to/round-1-adapter
+```
+
+The default scheduler limits are tuned for the checked-in dataset: its 5,530
+prompt variants have a maximum encoded length of 448 tokens. The evaluator uses
+`max_model_len=512`, `max_num_batched_tokens=32768`, and `max_num_seqs=512`.
+Override these with `GOQA_MAX_MODEL_LEN`, `GOQA_MAX_NUM_BATCHED_TOKENS`, and
+`GOQA_MAX_NUM_SEQS` when evaluating a different dataset.
+
 ## Separate inference and scoring
 
 Inference can be run independently:
@@ -111,6 +144,12 @@ order and four SHA-256-seeded permutations. For every prompt, inference is
 restricted to the valid one-token option labels. Their first-token log
 probabilities are normalized to form a distribution, mapped back to source
 option order, and averaged across the five prompts.
+
+vLLM is configured to return processed log probabilities after applying the
+valid-label mask. This is mathematically equivalent to normalizing the raw
+label logits, while ensuring that every valid label is returned in the first
+request. It avoids additional forced-label generation requests and does not
+change the evaluation metric.
 
 The averaged model distribution is compared with each available target human
 distribution using base-2 Jensen–Shannon distance:

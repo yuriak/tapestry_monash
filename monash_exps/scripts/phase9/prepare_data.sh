@@ -12,7 +12,7 @@ expected_revision="9f93ec45ae0d3eb9c901aff3b50d4325b5050488"
 
 [[ -f "${activation_script}" ]] || {
     echo "Missing Phase 9 environment activation helper: ${activation_script}" >&2
-    echo "Run bash 1_setup_env.sh first." >&2
+    echo "Run bash monash_exps/scripts/phase9/setup_env.sh first." >&2
     exit 1
 }
 # shellcheck source=/dev/null

@@ -238,12 +238,8 @@ reply.txt
 /p8_*.lo
 /TODO.md
 /m0_*output*.txt
-/m0_*spartan*.sh
-/m0_*spartan*.sbatch
-/m0_*rsync*.sh
 /m0_fl_spartan_playit.toml
 /m0_fl_m3_playit.toml
-/m0_fl_m3_playit.sh
 /m0_pull_*.sh
 /smux-*.out
 /smux-*.err

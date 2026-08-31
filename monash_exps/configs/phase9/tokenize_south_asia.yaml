@@ -1,0 +1,18 @@
+# Portable source template rendered by scripts/phase9/tokenize_south_asia.sh.
+model:
+  name: allenai/OLMo-2-1124-7B-Instruct
+  trust_remote_code: false
+
+data:
+  name: local
+  format: chatml
+  train_path: RENDERED_AT_RUNTIME
+  seq_len: 2048
+  cache_dir: RENDERED_AT_RUNTIME
+  pack_sequences: true
+  train_on_inputs: false
+  overwrite_cache: true
+  num_workers: 8
+  tokenize_batch_size: 32
+  tokenize_compression: snappy
+  prefetch_batches: 2

@@ -13,7 +13,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from checkpoint_grid import DEFAULT_FRACTIONS, resolve_checkpoint_grid
+from checkpoint_grid import (
+    DEFAULT_FRACTIONS,
+    resolve_adapter_manifest,
+    resolve_checkpoint_grid,
+)
 from evaluate_culturalbench_hard_vllm import load_examples as load_hard_examples
 from evaluate_culturalbench_hard_vllm import parse_bool
 from evaluate_culturalbench_vllm import load_examples as load_easy_examples
@@ -212,6 +216,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--import-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--adapter-manifest",
+        type=Path,
+        help="Explicit adapter grid; defaults to the seven baseline trajectories.",
+    )
     parser.add_argument("--request-batch-size", type=int, default=8192)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
     parser.add_argument("--prepare-only", action="store_true")
@@ -247,7 +256,11 @@ def main() -> int:
         {**row, "benchmark_split": "hard", "evaluation_id": row["example_id"]}
         for row in hard_examples
     ]
-    adapters = resolve_checkpoint_grid(runtime, import_root, model, view_root)
+    adapters = (
+        resolve_adapter_manifest(args.adapter_manifest, model, view_root)
+        if args.adapter_manifest
+        else resolve_checkpoint_grid(runtime, import_root, model, view_root)
+    )
     checkpoints = list(adapters)
     manifest = {
         "schema_version": 1,
@@ -260,7 +273,11 @@ def main() -> int:
         "hard_dataset_sha256": sha256(hard_dataset),
         "easy_examples": len(easy_examples),
         "hard_judgments": len(hard_examples),
-        "checkpoint_fractions": list(DEFAULT_FRACTIONS),
+        "checkpoint_fractions": (
+            sorted({item["target_fraction"] for item in adapters.values()})
+            if args.adapter_manifest
+            else list(DEFAULT_FRACTIONS)
+        ),
         "request_batch_size": args.request_batch_size,
         "adapters": adapters,
     }

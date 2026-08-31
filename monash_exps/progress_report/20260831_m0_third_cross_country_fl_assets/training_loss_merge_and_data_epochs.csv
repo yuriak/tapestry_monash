@@ -1,0 +1,17 @@
+node_id,round,start_loss,mean_loss,end_loss,steps,samples_end,duration_secs,delta_id,peer_id,delta_hash,remote_boundary,merge_confirmed
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,1,3.6406,3.1267222222222224,3.1875,9,288,169,,,,,
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,2,3.0781,3.081588888888889,2.8125,9,576,169,,,,,
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,3,2.5938,2.6914,2.5781,4,704,63,D1,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,4,3.0,2.3524222222222217,2.2812,9,288,170,D2,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,5,2.3594,2.194455555555555,2.0312,9,576,170,D3,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,6,1.9297,1.96095,1.8828,4,704,63,D3,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,7,2.1719,1.8038222222222222,1.8281,9,288,170,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,8,1.7812,1.7916444444444446,1.7031,9,576,169,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,9,1.5859,1.642575,1.6641,4,704,64,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,10,1.8672,1.632811111111111,1.6953,9,288,170,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,11,1.6016,1.658,1.6016,9,576,170,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,12,1.4688,1.5371000000000001,1.5703,4,704,64,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,13,1.7656,1.5564222222222222,1.625,9,288,169,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,14,1.5,1.5911333333333333,1.5703,9,576,169,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,15,1.3906,1.4785000000000001,1.5156,4,704,63,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True
+slakshna1x28st9y6amyeh642kuy4a56sxmg6vs5w67dqh0,16,1.6719,1.5095555555555555,1.6484,9,288,170,D4,slakshna1ltc3g97yd3ujeplt4g8n280h7k9ksua6dggg7w,,,True

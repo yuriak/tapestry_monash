@@ -22,7 +22,9 @@ inference_args=(
     --request-batch-size "${GOQA_REQUEST_BATCH_SIZE:-8192}"
     --tensor-parallel-size "${GOQA_TENSOR_PARALLEL_SIZE:-1}"
     --gpu-memory-utilization "${GOQA_GPU_MEMORY_UTILIZATION:-0.90}"
-    --max-model-len "${GOQA_MAX_MODEL_LEN:-4096}"
+    --max-model-len "${GOQA_MAX_MODEL_LEN:-512}"
+    --max-num-batched-tokens "${GOQA_MAX_NUM_BATCHED_TOKENS:-32768}"
+    --max-num-seqs "${GOQA_MAX_NUM_SEQS:-512}"
     --max-lora-rank "${GOQA_MAX_LORA_RANK:-64}"
     --dtype "${GOQA_DTYPE:-bfloat16}"
 )
@@ -32,8 +34,8 @@ fi
 if [[ "${GOQA_TRUST_REMOTE_CODE:-0}" == "1" ]]; then
     inference_args+=(--trust-remote-code)
 fi
-if [[ "${GOQA_ENFORCE_EAGER:-1}" == "0" ]]; then
-    inference_args+=(--no-enforce-eager)
+if [[ "${GOQA_ENFORCE_EAGER:-0}" == "1" ]]; then
+    inference_args+=(--enforce-eager)
 fi
 
 "${python_bin}" "${script_dir}/run_inference.py" "${inference_args[@]}"

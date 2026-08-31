@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -98,4 +99,60 @@ def resolve_checkpoint_grid(
                 "actual_fraction": step / final_step,
                 "epoch_equivalent": 2.0 * step / final_step,
             }
+    return adapters
+
+
+def resolve_adapter_manifest(
+    manifest_path: Path,
+    model: Path,
+    view_root: Path,
+) -> dict[str, dict[str, Any]]:
+    """Resolve an explicit adapter grid while retaining the baseline schema."""
+    manifest_path = manifest_path.resolve()
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("schema_version") != 1 or not isinstance(
+        manifest.get("adapters"), list
+    ):
+        raise ValueError(f"Invalid adapter manifest: {manifest_path}")
+    adapters: dict[str, dict[str, Any]] = {
+        "base": {
+            "view": None,
+            "weights": None,
+            "adapter_sha256": None,
+            "training_run": "base",
+            "step": 0,
+            "final_step": 0,
+            "target_fraction": 0.0,
+            "actual_fraction": 0.0,
+            "epoch_equivalent": 0.0,
+        }
+    }
+    for entry in manifest["adapters"]:
+        if not isinstance(entry, dict):
+            raise TypeError("adapter manifest entries must be objects")
+        name = entry.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9_]+", name):
+            raise ValueError(f"Invalid adapter name: {name!r}")
+        if name in adapters:
+            raise ValueError(f"Duplicate adapter name: {name}")
+        weights = (manifest_path.parent / entry["weights"]).resolve()
+        if not weights.is_file() or weights.suffix != ".safetensors":
+            raise ValueError(f"Adapter weights are missing: {weights}")
+        digest = sha256(weights)
+        if digest != entry.get("weights_sha256"):
+            raise ValueError(f"Adapter SHA-256 mismatch: {name}")
+        view = create_adapter_view(view_root, name, weights, model)
+        adapters[name] = {
+            "view": str(view),
+            "weights": str(weights),
+            "adapter_sha256": digest,
+            "training_run": entry["training_run"],
+            "step": int(entry["step"]),
+            "final_step": int(entry["final_step"]),
+            "target_fraction": float(entry["target_fraction"]),
+            "actual_fraction": float(entry["actual_fraction"]),
+            "epoch_equivalent": float(entry["epoch_equivalent"]),
+            "site": entry.get("site"),
+            "variant": entry.get("variant"),
+        }
     return adapters

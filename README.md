@@ -11,6 +11,9 @@ actionable feedback for the Slakshna maintainers. Experiment-side workarounds li
 - Phase 8 accepted revision: `f09eff9a73ae8f1080d4f0b43114b3a8aa5e99bb`
 - Phase 9 stock-release rehearsal revision:
   `9f93ec45ae0d3eb9c901aff3b50d4325b5050488` (`v0.1.1-alpha`)
+- M0 post-training upstream re-audit revision:
+  `2b205b18e83d630676572e564da73f9a47df4dfc` with Bhaskera
+  `b3d8c8dbe74fd287d3c4f3040da37c6d34b57af4`
 - Installed Bhaskera distribution version: `2.2.0`
 - Python: 3.11.13
 - PyTorch: 2.9.0+cu128
@@ -448,6 +451,114 @@ Relevant files:
 - `Slakshna/src/main.rs`
 - `Slakshna/ml_engine.py`
 - `Slakshna/Bhaskera/src/bhaskera/trainer/loop.py`
+
+### 18. A fixed-length run does not apply the peer's final transmitted update
+
+Severity: high for final-model semantics; confirmed by source audit and an
+otherwise successful ten-round two-site run.
+
+At the beginning of each Rust federated epoch, Slakshna stages the most recent
+peer update and launches `ml_engine.py`. The Python process trains locally,
+aggregates its new local delta with the staged peer delta, saves the resulting
+model, and only then broadcasts its new delta. This implements a one-round
+communication lag: round *r* applies the site's round-*r* delta together with
+the peer's round-*r-1* delta. After the final broadcast, the Rust loop exits
+without launching an aggregation-only phase, so both peers receive but never
+apply one another's last update.
+
+The defect is observable even when transport succeeds completely. In the
+ten-round run, each site sent and received ten valid 128-tensor updates, but
+the native `sync_round_10.pth` contained its own round-10 update and the peer's
+round-9 update. Reconstructing that state from the retained payload history
+matched it exactly. Applying both transmitted round-10 deltas afterward
+changed the AU and India adapter L2 values by 2.7426 and 0.6254 respectively,
+so the missing final aggregation is not merely bookkeeping.
+
+Suggested fix: after the final exchange barrier, execute a deterministic
+aggregation-only phase using the last validated update from every expected
+participant and the final observer-local trust weights. Persist it under an
+unambiguous final-model name, retain the pre-finalization state for diagnosis,
+and fail if an expected last-round update is absent or invalid.
+
+Relevant files:
+
+- `Slakshna/src/main.rs`
+- `Slakshna/ml_engine.py`
+- `Slakshna/federated_communication/aggregation.py`
+
+### 19. The stock node template does not match the Bhaskera configuration schema
+
+Severity: high; confirmed against Slakshna `2b205b1` and its pinned Bhaskera
+`b3d8c8d` by loading the template through Bhaskera's public configuration
+parser.
+
+The updated stock `node_template.yaml` uses several field names that Bhaskera
+does not consume: `data.dataset_name`, `data.sequence_length`,
+`training.gradient_accumulation_steps`, `lora.rank`,
+`checkpoint.retention`, `checkpoint.save_strategy`, `checkpoint.save_steps`,
+and `checkpoint.save_total_limit`. Unknown fields are accepted silently. For
+example, the template declares gradient accumulation 8 and retention 1, but
+Bhaskera resolves these to its defaults of 4 and 2. `data.name` resolves to
+the default `ultrachat`, although the explicit tokenized path points to the
+South Asia cache. Sequence length 2048 and LoRA rank 16 appear correct only
+because those values coincide with current defaults. Slakshna explicitly
+translates `training.learning_rate`, so its declared value does take effect.
+
+The canonical `Bhaskera/configs/train_south_asia.yaml` added in the same update
+uses the accepted field names, but it also specifies materially different
+training choices (including the Instruct model, LoRA rank 256, batch size 1,
+and learning rate 2e-5) and is not loaded by Slakshna's normal node-template
+path. The two files therefore cannot currently be treated as equivalent
+descriptions of the same experiment.
+
+Suggested fix: publish one authoritative configuration using Bhaskera's
+canonical names, reject unknown keys during parsing, and add a startup dump of
+the fully resolved configuration. A test should assert the resolved model,
+dataset, batch/accumulation, optimizer, checkpoint retention, and step budget
+before an ML subprocess is launched.
+
+Relevant files:
+
+- `Slakshna/node_template.yaml`
+- `Slakshna/ml_engine.py`
+- `Slakshna/Bhaskera/src/bhaskera/config/parser.py`
+- `Slakshna/Bhaskera/src/bhaskera/config/schema.py`
+- `Slakshna/Bhaskera/configs/train_south_asia.yaml`
+
+### 20. A departed peer's cached update can be replayed indefinitely
+
+Severity: critical for asynchronous-run validity; confirmed by the 26--27
+August Australia--India run and by source audit at Slakshna `2b205b1`.
+
+At the start of every local epoch, the Rust loop walks each peer's complete
+history, selects its most recent `ModelUpdate`, and writes that payload to the
+same `network_deltas/<peer>_delta.b64` path. The record has no consumed state
+and is not required to match the current local epoch. The ML engine then loads
+every staged file named by the historical peer set. Consequently, a cached
+payload remains eligible after it has already been aggregated and after its
+sender has left the live gossip mesh.
+
+The joint run made the behavior directly observable. India's final new update,
+D14, arrived before the peer disconnected. Monash first incorporated D14 in
+local round 21, then continued to report the expected participant count and
+loaded D14 again in rounds 22--31 even though no new Indian update arrived.
+Those checkpoints contain valid additional local optimization, but they do not
+represent ten further rounds of fresh two-site federation.
+
+Suggested fix: attach sender and monotonically increasing round/update IDs to
+every staged delta, persist the last consumed ID per peer, and make aggregation
+require an explicitly declared freshness policy. Participant readiness for a
+round must be computed from fresh current-round records or from a documented
+bounded-staleness rule, never from membership in historical update state. A
+peer departure should remove it from live readiness while retaining its old
+records only for audit and recovery.
+
+Relevant files:
+
+- `Slakshna/src/main.rs`
+- `Slakshna/src/history.rs`
+- `Slakshna/src/network/mesh.rs`
+- `Slakshna/ml_engine.py`
 
 ## Packaging and cluster-integration findings
 

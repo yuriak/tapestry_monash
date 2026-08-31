@@ -5,12 +5,13 @@ mode="${1:---test-only}"
 case "${mode}" in
     --test-only) submit_flag="--test-only" ;;
     --submit) submit_flag="" ;;
-    *) echo "Usage: bash m0_fl_submit_m3.sh --test-only|--submit" >&2; exit 2 ;;
+    *) echo "Usage: bash monash_exps/scripts/m0_fl/04_submit_m3.sh --test-only|--submit" >&2; exit 2 ;;
 esac
 
-workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+workspace="$(cd "${script_dir}/../../.." && pwd -P)"
 output_root="$(readlink -f "${workspace}/Slakshna/m0_runtime")"
-playit_config="${M0_FL_PLAYIT_CONFIG:-${workspace}/m0_fl_m3_playit.toml}"
+playit_config="${M0_FL_PLAYIT_CONFIG:-${workspace}/monash_exps/.runtime/configs/m0_fl/m3_playit.toml}"
 job_script="${workspace}/monash_exps/scripts/m0_fl/m3_formal_job.sbatch"
 run_id="${M0_FL_RUN_ID:-m0-local-fl-$(date +%Y%m%dT%H%M%S)}"
 

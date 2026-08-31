@@ -23,7 +23,7 @@ from goqa_common import (
     softmax,
 )
 
-OPTION_LOGPROBS = 20
+OPTION_LOGPROBS = len(LABELS)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,12 +44,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.90)
-    parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument("--max-model-len", type=int, default=512)
+    parser.add_argument("--max-num-batched-tokens", type=int, default=32768)
+    parser.add_argument("--max-num-seqs", type=int, default=512)
     parser.add_argument("--max-lora-rank", type=int, default=64)
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument(
-        "--enforce-eager", action=argparse.BooleanOptionalAction, default=True
+        "--enforce-eager", action=argparse.BooleanOptionalAction, default=False
     )
     return parser.parse_args()
 
@@ -88,6 +90,12 @@ def main() -> int:
         raise ValueError("tensor-parallel-size must be positive")
     if not 0 < args.gpu_memory_utilization <= 1:
         raise ValueError("gpu-memory-utilization must be in (0, 1]")
+    if args.max_model_len < 2:
+        raise ValueError("max-model-len must be at least two")
+    if args.max_num_batched_tokens < args.max_model_len:
+        raise ValueError("max-num-batched-tokens must cover max-model-len")
+    if args.max_num_seqs < 1:
+        raise ValueError("max-num-seqs must be positive")
 
     questions = load_dataset(dataset)
     expected = {row["question_id"] for row in questions}
@@ -113,9 +121,12 @@ def main() -> int:
             "tensor_parallel_size": args.tensor_parallel_size,
             "gpu_memory_utilization": args.gpu_memory_utilization,
             "max_model_len": args.max_model_len,
+            "max_num_batched_tokens": args.max_num_batched_tokens,
+            "max_num_seqs": args.max_num_seqs,
             "max_lora_rank": args.max_lora_rank if adapter else None,
             "request_batch_size": args.request_batch_size,
             "enforce_eager": args.enforce_eager,
+            "logprobs_mode": "processed_logprobs",
             "trust_remote_code": args.trust_remote_code,
         },
     }
@@ -165,6 +176,12 @@ def main() -> int:
         "max_model_len": args.max_model_len,
         "gpu_memory_utilization": args.gpu_memory_utilization,
         "enforce_eager": args.enforce_eager,
+        "max_num_batched_tokens": args.max_num_batched_tokens,
+        "max_num_seqs": args.max_num_seqs,
+        # Normalize after the valid-label mask. This makes every valid label
+        # available in the first response and avoids one forced retry per
+        # missing raw-vocabulary top-logprob entry.
+        "logprobs_mode": "processed_logprobs",
         "enable_lora": bool(adapter),
     }
     if adapter:
@@ -219,36 +236,17 @@ def main() -> int:
                 raise RuntimeError("vLLM output count mismatch")
             positions = [dict(item.outputs[0].logprobs[0]) for item in generated]
 
-            recovery_messages = []
-            recovery_sampling = []
-            recovery_targets = []
             for request_index, (info, position) in enumerate(zip(request_info, positions)):
-                for token_id in label_ids[: info["count"]]:
-                    if token_id not in position:
-                        recovery_messages.append(messages[request_index])
-                        recovery_sampling.append(
-                            SamplingParams(
-                                temperature=0.0,
-                                max_tokens=1,
-                                logprobs=0,
-                                allowed_token_ids=[token_id],
-                            )
-                        )
-                        recovery_targets.append((request_index, token_id))
-            if recovery_messages:
-                recovered = llm.chat(
-                    recovery_messages,
-                    sampling_params=recovery_sampling,
-                    lora_request=lora_request,
-                    use_tqdm=False,
-                )
-                if len(recovered) != len(recovery_targets):
-                    raise RuntimeError("vLLM fallback output count mismatch")
-                for item, (request_index, token_id) in zip(recovered, recovery_targets):
-                    position = item.outputs[0].logprobs[0]
-                    if token_id not in position:
-                        raise RuntimeError("Forced option-label log probability is missing")
-                    positions[request_index][token_id] = position[token_id]
+                missing = [
+                    token_id
+                    for token_id in label_ids[: info["count"]]
+                    if token_id not in position
+                ]
+                if missing:
+                    raise RuntimeError(
+                        "Processed log probabilities omitted valid option labels "
+                        f"for request {request_index}: {missing}"
+                    )
 
             by_question: list[list[dict[str, Any]]] = [[] for _ in batch]
             for info, item, position in zip(request_info, generated, positions):

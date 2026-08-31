@@ -20,7 +20,7 @@ if [[ -z "${PHASE9_CROSS_COUNTRIES_CONFIG:-}" && ! -f "${default_config}" ]]; th
 fi
 
 [[ -f "${activation_script}" ]] || {
-    echo "Missing Phase 9 environment. Run bash 1_setup_env.sh first." >&2
+    echo "Missing Phase 9 environment. Run bash monash_exps/scripts/phase9/setup_env.sh first." >&2
     exit 1
 }
 # shellcheck source=/dev/null

@@ -255,7 +255,10 @@ def native_outputs(experiment_root: Path) -> tuple[dict[str, Any], Path]:
     manifest_path = experiment_root / ".runtime/manifests/phase9/prepare-native.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("status") != "PASS" or manifest.get("slakshna_revision") != EXPECTED_REVISION:
-        raise RuntimeError("Run bash 3_prepare_native.sh for the pinned Phase 9 release")
+        raise RuntimeError(
+            "Run bash monash_exps/scripts/phase9/prepare_native.sh "
+            "for the pinned Phase 9 release"
+        )
     rust_binary = experiment_root / ".runtime/cargo-target/phase9-stock/release/iiitd"
     if not os.access(rust_binary, os.X_OK):
         raise RuntimeError(f"Missing release binary: {rust_binary}")

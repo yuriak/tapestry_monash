@@ -17,7 +17,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from checkpoint_grid import DEFAULT_FRACTIONS, resolve_checkpoint_grid
+from checkpoint_grid import (
+    DEFAULT_FRACTIONS,
+    resolve_adapter_manifest,
+    resolve_checkpoint_grid,
+)
 from evaluate_culturalbench_vllm import (
     MODEL_CHOICES,
     create_adapter_view,
@@ -240,6 +244,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs", nargs="+", choices=MODEL_CHOICES)
     parser.add_argument("--all-checkpoints", action="store_true")
     parser.add_argument(
+        "--adapter-manifest",
+        type=Path,
+        help="Explicit adapter grid; mutually exclusive with baseline selectors.",
+    )
+    parser.add_argument(
         "--request-batch-size",
         type=int,
         default=16384,
@@ -264,8 +273,12 @@ def main() -> int:
     output_dir = args.output_dir.resolve()
     if not (model / "config.json").is_file() or not dataset.is_file():
         raise ValueError("Model or GlobalOpinionQA input is missing")
-    if args.all_checkpoints and args.runs:
-        raise ValueError("--all-checkpoints and --runs are mutually exclusive")
+    if sum(
+        bool(value) for value in (args.all_checkpoints, args.runs, args.adapter_manifest)
+    ) > 1:
+        raise ValueError(
+            "--all-checkpoints, --runs, and --adapter-manifest are mutually exclusive"
+        )
     if args.request_batch_size < 4096:
         raise ValueError("--request-batch-size must be at least 4096")
     if args.batch_size is not None and args.batch_size < 1:
@@ -277,7 +290,9 @@ def main() -> int:
     view_root = output_dir / ".adapter_views"
     view_root.mkdir(exist_ok=True)
     questions = load_questions(dataset)
-    if args.all_checkpoints:
+    if args.adapter_manifest:
+        adapters = resolve_adapter_manifest(args.adapter_manifest, model, view_root)
+    elif args.all_checkpoints:
         adapters = resolve_checkpoint_grid(runtime, import_root, model, view_root)
     else:
         selected_runs = args.runs or MODEL_CHOICES
@@ -306,7 +321,11 @@ def main() -> int:
         "question_count": len(questions),
         "system_prompt": SYSTEM_PROMPT,
         "prompt_variants": PROMPT_VARIANTS,
-        "checkpoint_fractions": list(DEFAULT_FRACTIONS) if args.all_checkpoints else None,
+        "checkpoint_fractions": (
+            sorted({item["target_fraction"] for item in adapters.values()})
+            if args.adapter_manifest
+            else list(DEFAULT_FRACTIONS) if args.all_checkpoints else None
+        ),
         "request_batch_size": args.request_batch_size,
         "question_batch_size": question_batch_size,
         "prompt_method": "identity plus four SHA-256-seeded option-order permutations",
@@ -534,7 +553,7 @@ def main() -> int:
                         "model_distribution": averaged,
                         "country_metrics": country_metrics,
                     }
-                    if args.all_checkpoints:
+                    if args.all_checkpoints or args.adapter_manifest:
                         record.update(
                             training_run=adapters[run]["training_run"],
                             step=adapters[run]["step"],

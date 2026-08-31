@@ -10,6 +10,39 @@ site-specific module labels can be supplied after inspecting `module avail`.
 Other Slurm clusters can use the generic adapter after their compiler and CUDA
 modules have been loaded. No adapter modifies the Slakshna submodule.
 
+## Repository layout and operator entry points
+
+The repository root is intentionally kept small. Durable experiment code lives
+under this directory:
+
+- `scripts/` contains shell and Slurm entry points;
+- `src/` contains Python preparation, orchestration, evaluation, and reporting code;
+- `configs/` contains portable source configurations;
+- `progress_report/` contains reviewed Markdown/DOCX deliverables and small figures;
+- `archive/` contains date-scoped, human-authored provenance that is not a current API;
+- `.runtime/` contains machine-local environments, secrets, caches, generated configs,
+  logs, models, and predictions and is never committed.
+
+Run maintained entry points from the repository root. Phase 9 uses, in order:
+
+```bash
+bash monash_exps/scripts/phase9/setup_env.sh
+bash monash_exps/scripts/phase9/prepare_data.sh
+bash monash_exps/scripts/phase9/prepare_native.sh
+bash monash_exps/scripts/phase9/run_native_smoke.sh
+bash monash_exps/scripts/phase9/cross_countries_fl.sh local
+```
+
+The M0 local-FL operator scripts are under `scripts/m0_fl/`. In particular,
+`04_submit_m3.sh`, `manage_m3_playit.sh`, `sync_spartan_assets.sh`, and the
+Spartan-specific prepare/submit/job scripts replace the former root-level
+meeting helpers. Machine-local Playit TOML files are written under
+`.runtime/configs/m0_fl/`.
+
+The detailed Phase 9 runbook is
+[`docs/phase9_cross_country_fl.md`](docs/phase9_cross_country_fl.md). Root-level
+numbered wrapper scripts are intentionally not part of the maintained interface.
+
 ## One-command deployment
 
 Every clone builds its own ignored runtime from the committed source and lock

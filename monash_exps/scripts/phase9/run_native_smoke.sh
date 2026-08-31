@@ -10,14 +10,14 @@ native_manifest="${experiment_root}/.runtime/manifests/phase9/prepare-native.jso
 rust_binary="${experiment_root}/.runtime/cargo-target/phase9-stock/release/iiitd"
 
 [[ -f "${activation_script}" ]] || {
-    echo "Missing Phase 9 environment. Run bash 1_setup_env.sh first." >&2
+    echo "Missing Phase 9 environment. Run bash monash_exps/scripts/phase9/setup_env.sh first." >&2
     exit 1
 }
 # shellcheck source=/dev/null
 source "${activation_script}"
 
 [[ -s "${native_manifest}" && -x "${rust_binary}" ]] || {
-    echo "Missing native preparation outputs. Run bash 3_prepare_native.sh first." >&2
+    echo "Missing native preparation outputs. Run bash monash_exps/scripts/phase9/prepare_native.sh first." >&2
     exit 1
 }
 

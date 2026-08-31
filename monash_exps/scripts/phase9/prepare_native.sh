@@ -16,7 +16,7 @@ cross_countries_source="${experiment_root}/configs/phase9/cross_countries_fl.yam
 cross_countries_config="${slakshna_root}/configs/phase9/cross_countries_fl.yaml"
 
 [[ -f "${activation_script}" ]] || {
-    echo "Missing Phase 9 environment. Run bash 1_setup_env.sh first." >&2
+    echo "Missing Phase 9 environment. Run bash monash_exps/scripts/phase9/setup_env.sh first." >&2
     exit 1
 }
 # shellcheck source=/dev/null
@@ -28,7 +28,7 @@ current_revision="$(git -C "${slakshna_root}" rev-parse HEAD)"
     exit 1
 }
 [[ -s "${data_root}/manifest.json" ]] || {
-    echo "Missing prepared Phase 9 data. Run bash 2_prepare_data.sh first." >&2
+    echo "Missing prepared Phase 9 data. Run bash monash_exps/scripts/phase9/prepare_data.sh first." >&2
     exit 1
 }
 
